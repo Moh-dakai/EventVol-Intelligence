@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "eventvol-intelligence": {
+      "command": "python",
+      "args": ["/absolute/path/to/eventvol/server.py"],
+      "env": { "TWELVE_DATA_API_KEY": "your_key_here" }
+    }
+  }
+}
