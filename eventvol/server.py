@@ -11,6 +11,13 @@ from mcp.server import Server
 from mcp.types import TextContent, PromptMessage
 import statistics
 
+# HTTP/SSE transport imports
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
+from mcp.server.sse import SseServerTransport
+import uvicorn
+
 # Load environment variables
 load_dotenv()
 
@@ -278,9 +285,9 @@ class EventVolServer:
             ]
         }
 
-server = Server("eventvol-intelligence")
+mcp_server = Server("eventvol-intelligence")
 
-@server.list_tools()
+@mcp_server.list_tools()
 async def handle_list_tools() -> list[Tool]:
     """List available tools."""
     return [
@@ -338,7 +345,7 @@ async def handle_list_tools() -> list[Tool]:
         )
     ]
 
-@server.call_tool()
+@mcp_server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls."""
     eventvol = EventVolServer()
@@ -363,15 +370,45 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
     else:
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
-async def main():
-    from mcp.server.stdio import stdio_server
+# FastAPI / SSE transport setup
+fastapi_app = FastAPI(title="EventVol Intelligence", version="1.0.0")
+sse_transport = SseServerTransport("/messages")
 
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options()
+@fastapi_app.get("/")
+async def root():
+    return JSONResponse({
+        "name": "EventVol Intelligence",
+        "description": "Event-Adjusted FX Volatility Projection Engine. Provides expected pip deviation, breakout probability, fakeout score, and volatility regime for FX pairs around macro events (NFP, CPI, FOMC, ECB, BOE).",
+        "version": "1.0.0",
+        "tools": [
+            "event_volatility_projection",
+            "volatility_regime_scan",
+            "list_supported_events"
+        ],
+        "pricing": "$0.10 per response",
+        "author": "EventVol"
+    })
+
+@fastapi_app.get("/health")
+async def health():
+    return JSONResponse({"status": "ok"})
+
+@fastapi_app.get("/sse")
+async def sse_endpoint(request: Request):
+    async with sse_transport.connect_sse(
+        request.scope, request.receive, request._send
+    ) as streams:
+        await mcp_server.run(
+            streams[0], streams[1],
+            mcp_server.create_initialization_options()
         )
 
+@fastapi_app.post("/messages")
+async def messages_endpoint(request: Request):
+    await sse_transport.handle_post_message(
+        request.scope, request.receive, request._send
+    )
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=port)

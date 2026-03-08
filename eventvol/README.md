@@ -8,7 +8,25 @@ A Model Context Protocol (MCP) server that provides statistical analysis of FX v
 - Calculate breakout and fakeout probabilities
 - Determine volatility regimes
 - Support for multiple FX pairs and events
+## HTTP/SSE Transport & Deployment
 
+This server now uses a FastAPI + Server-Sent Events transport and can be deployed to
+Railway, Render, Fly.io, or any Python host. The following endpoints are available:
+
+- `GET /` → tool metadata JSON (name, tools, pricing)
+- `GET /health` → health check (`{"status": "ok"}`)
+- `GET /sse` → opens SSE stream for MCP communication
+- `POST /messages` → accepts MCP JSON-RPC messages
+
+Use environment variables:
+
+```bash
+TWELVE_DATA_API_KEY=your_key_here
+PORT=8000  # default
+```
+
+Include a `Procfile` (`web: python server.py`) and optional `runtime.txt` (`python-3.11.9`)
+when deploying. Add `.env` to `.gitignore` to avoid leaking your API key.
 ## Setup
 
 1. Install dependencies:
@@ -21,8 +39,13 @@ A Model Context Protocol (MCP) server that provides statistical analysis of FX v
    TWELVE_DATA_API_KEY=your_actual_api_key
    ```
 
-3. Run the server:
+- Run the server locally (stdio for Claude Desktop):
    ```bash
+   python server.py
+   ```
+- Or start HTTP/SSE server for deployment:
+   ```bash
+   # server now serves FastAPI endpoints on PORT (default 8000)
    python server.py
    ```
 
