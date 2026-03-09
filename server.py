@@ -1,20 +1,18 @@
-import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import httpx
 from dotenv import load_dotenv
 from mcp import Tool
 from mcp.server import Server
-from mcp.types import TextContent, PromptMessage
+from mcp.types import TextContent
 import statistics
 
 # HTTP/SSE transport imports
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from sse_starlette.sse import EventSourceResponse
+from fastapi.responses import JSONResponse, Response
 from mcp.server.sse import SseServerTransport
 import uvicorn
 
@@ -40,6 +38,9 @@ PIP_SIZES = {
 
 SUPPORTED_EVENTS = list(EVENT_HOURS.keys())
 
+def parse_candle_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
 def get_pip_size(pair: str) -> float:
     if "JPY" in pair:
         return PIP_SIZES["JPY"]
@@ -51,12 +52,14 @@ def get_pip_size(pair: str) -> float:
 def get_session_bias(hour: int) -> str:
     if 0 <= hour < 8:
         return "Asia"
-    elif 8 <= hour < 13:
+    elif 8 <= hour < 12:
         return "London"
-    elif 13 <= hour < 21:
+    elif 12 <= hour < 16:
+        return "Overlap"  # London/NY overlap
+    elif 16 <= hour < 21:
         return "NY"
     else:
-        return "Overlap"  # 12-16 overlap, but since events are at specific hours
+        return "AfterHours"
 
 def is_first_friday_of_month(dt: datetime) -> bool:
     # Check if it's Friday and the first Friday of the month
@@ -92,7 +95,10 @@ class EventVolServer:
                 if "values" not in data:
                     raise ValueError(f"API error: {data.get('message', 'No values returned')}")
 
-                return data["values"]
+                # Ensure candles are oldest -> newest for forward-looking ranges (i+1, i+4).
+                values = data["values"]
+                values.sort(key=lambda candle: parse_candle_datetime(candle["datetime"]))
+                return values
             except httpx.TimeoutException:
                 raise ValueError("API request timed out")
             except httpx.HTTPStatusError as e:
@@ -106,7 +112,7 @@ class EventVolServer:
         last_day = None
 
         for i, candle in enumerate(candles):
-            dt = datetime.fromisoformat(candle["datetime"].replace('Z', '+00:00'))
+            dt = parse_candle_datetime(candle["datetime"])
             hour = dt.hour
 
             # For NFP, only first Friday of month
@@ -402,12 +408,12 @@ async def sse_endpoint(request: Request):
             streams[0], streams[1],
             mcp_server.create_initialization_options()
         )
+    # Return an empty response after SSE disconnect to avoid FastAPI trying
+    # to serialize None.
+    return Response()
 
-@fastapi_app.post("/messages")
-async def messages_endpoint(request: Request):
-    await sse_transport.handle_post_message(
-        request.scope, request.receive, request._send
-    )
+# Mount POST messages handler as raw ASGI app. It writes responses directly.
+fastapi_app.mount("/messages", sse_transport.handle_post_message)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
