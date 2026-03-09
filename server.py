@@ -14,6 +14,7 @@ import statistics
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from mcp.server.sse import SseServerTransport
+from starlette.types import Receive, Scope, Send
 import uvicorn
 
 # Load environment variables
@@ -378,7 +379,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 # FastAPI / SSE transport setup
 fastapi_app = FastAPI(title="EventVol Intelligence", version="1.0.0")
-sse_transport = SseServerTransport("/messages")
+sse_transport = SseServerTransport("/messages/")
 
 @fastapi_app.get("/")
 async def root():
@@ -412,8 +413,15 @@ async def sse_endpoint(request: Request):
     # to serialize None.
     return Response()
 
+async def messages_asgi(scope: Scope, receive: Receive, send: Send):
+    if scope["type"] == "http" and scope["method"] != "POST":
+        response = Response("Method Not Allowed", status_code=405)
+        await response(scope, receive, send)
+        return
+    await sse_transport.handle_post_message(scope, receive, send)
+
 # Mount POST messages handler as raw ASGI app. It writes responses directly.
-fastapi_app.mount("/messages", sse_transport.handle_post_message)
+fastapi_app.mount("/messages/", messages_asgi)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
