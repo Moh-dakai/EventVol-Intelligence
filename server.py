@@ -321,51 +321,24 @@ async def handle_list_tools() -> list[Tool]:
                 "required": ["pair", "event"]
             },
             outputSchema={
-                "oneOf": [
-                    {
-                        "type": "object",
-                        "properties": {
-                            "error": {"type": "string"},
-                            "sample_size": {"type": "integer"}
-                        },
-                        "required": ["error"]
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "pair": {"type": "string"},
-                            "event": {"type": "string"},
-                            "session_bias": {"type": "string"},
-                            "sample_size": {"type": "integer"},
-                            "expected_deviation_pips": {"type": "number"},
-                            "mean_deviation_pips": {"type": "number"},
-                            "p75_deviation_pips": {"type": "number"},
-                            "h4_range_median_pips": {"type": "number"},
-                            "breakout_probability": {"type": "number"},
-                            "mean_reversion_probability": {"type": "number"},
-                            "fakeout_likelihood_score": {"type": "number"},
-                            "volatility_regime": {"type": "string"},
-                            "confidence_score": {"type": "number"},
-                            "analysis_timestamp": {"type": "string"}
-                        },
-                        "required": [
-                            "pair",
-                            "event",
-                            "session_bias",
-                            "sample_size",
-                            "expected_deviation_pips",
-                            "mean_deviation_pips",
-                            "p75_deviation_pips",
-                            "h4_range_median_pips",
-                            "breakout_probability",
-                            "mean_reversion_probability",
-                            "fakeout_likelihood_score",
-                            "volatility_regime",
-                            "confidence_score",
-                            "analysis_timestamp"
-                        ]
-                    }
-                ]
+                "type": "object",
+                "properties": {
+                    "error": {"type": "string"},
+                    "pair": {"type": "string"},
+                    "event": {"type": "string"},
+                    "session_bias": {"type": "string"},
+                    "sample_size": {"type": "integer"},
+                    "expected_deviation_pips": {"type": "number"},
+                    "mean_deviation_pips": {"type": "number"},
+                    "p75_deviation_pips": {"type": "number"},
+                    "h4_range_median_pips": {"type": "number"},
+                    "breakout_probability": {"type": "number"},
+                    "mean_reversion_probability": {"type": "number"},
+                    "fakeout_likelihood_score": {"type": "number"},
+                    "volatility_regime": {"type": "string"},
+                    "confidence_score": {"type": "number"},
+                    "analysis_timestamp": {"type": "string"}
+                }
             }
         ),
         Tool(
@@ -388,29 +361,23 @@ async def handle_list_tools() -> list[Tool]:
                 "required": ["pairs", "event"]
             },
             outputSchema={
-                "type": "array",
-                "items": {
-                    "oneOf": [
-                        {
+                "type": "object",
+                "properties": {
+                    "results": {
+                        "type": "array",
+                        "items": {
                             "type": "object",
                             "properties": {
                                 "pair": {"type": "string"},
-                                "error": {"type": "string"}
-                            },
-                            "required": ["pair", "error"]
-                        },
-                        {
-                            "type": "object",
-                            "properties": {
-                                "pair": {"type": "string"},
+                                "error": {"type": "string"},
                                 "regime": {"type": "string"},
                                 "median_dev_pips": {"type": "number"},
                                 "confidence": {"type": "number"}
-                            },
-                            "required": ["pair", "regime", "median_dev_pips", "confidence"]
+                            }
                         }
-                    ]
-                }
+                    }
+                },
+                "required": ["results"]
             }
         ),
         Tool(
@@ -460,7 +427,7 @@ async def handle_call_tool(name: str, arguments: dict) -> dict:
         pairs = arguments["pairs"]
         event = arguments["event"]
         result = await eventvol.volatility_regime_scan(pairs, event)
-        return result
+        return {"results": result}
 
     elif name == "list_supported_events":
         result = eventvol.list_supported_events()
