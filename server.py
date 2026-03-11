@@ -7,7 +7,6 @@ import httpx
 from dotenv import load_dotenv
 from mcp import Tool
 from mcp.server import Server
-from mcp.types import TextContent
 import statistics
 
 # HTTP/SSE transport imports
@@ -320,6 +319,53 @@ async def handle_list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["pair", "event"]
+            },
+            outputSchema={
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "error": {"type": "string"},
+                            "sample_size": {"type": "integer"}
+                        },
+                        "required": ["error"]
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "pair": {"type": "string"},
+                            "event": {"type": "string"},
+                            "session_bias": {"type": "string"},
+                            "sample_size": {"type": "integer"},
+                            "expected_deviation_pips": {"type": "number"},
+                            "mean_deviation_pips": {"type": "number"},
+                            "p75_deviation_pips": {"type": "number"},
+                            "h4_range_median_pips": {"type": "number"},
+                            "breakout_probability": {"type": "number"},
+                            "mean_reversion_probability": {"type": "number"},
+                            "fakeout_likelihood_score": {"type": "number"},
+                            "volatility_regime": {"type": "string"},
+                            "confidence_score": {"type": "number"},
+                            "analysis_timestamp": {"type": "string"}
+                        },
+                        "required": [
+                            "pair",
+                            "event",
+                            "session_bias",
+                            "sample_size",
+                            "expected_deviation_pips",
+                            "mean_deviation_pips",
+                            "p75_deviation_pips",
+                            "h4_range_median_pips",
+                            "breakout_probability",
+                            "mean_reversion_probability",
+                            "fakeout_likelihood_score",
+                            "volatility_regime",
+                            "confidence_score",
+                            "analysis_timestamp"
+                        ]
+                    }
+                ]
             }
         ),
         Tool(
@@ -340,6 +386,31 @@ async def handle_list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["pairs", "event"]
+            },
+            outputSchema={
+                "type": "array",
+                "items": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "pair": {"type": "string"},
+                                "error": {"type": "string"}
+                            },
+                            "required": ["pair", "error"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "pair": {"type": "string"},
+                                "regime": {"type": "string"},
+                                "median_dev_pips": {"type": "number"},
+                                "confidence": {"type": "number"}
+                            },
+                            "required": ["pair", "regime", "median_dev_pips", "confidence"]
+                        }
+                    ]
+                }
             }
         ),
         Tool(
@@ -348,12 +419,33 @@ async def handle_list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {}
+            },
+            outputSchema={
+                "type": "object",
+                "properties": {
+                    "events": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "utc_hour": {"type": "integer"},
+                                "primary_pairs": {
+                                    "type": "array",
+                                    "items": {"type": "string"}
+                                }
+                            },
+                            "required": ["name", "utc_hour", "primary_pairs"]
+                        }
+                    }
+                },
+                "required": ["events"]
             }
         )
     ]
 
 @mcp_server.call_tool()
-async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def handle_call_tool(name: str, arguments: dict) -> dict:
     """Handle tool calls."""
     eventvol = EventVolServer()
 
@@ -362,20 +454,20 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         event = arguments["event"]
         lookback_events = arguments.get("lookback_events", 24)
         result = await eventvol.event_volatility_projection(pair, event, lookback_events)
-        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        return result
 
     elif name == "volatility_regime_scan":
         pairs = arguments["pairs"]
         event = arguments["event"]
         result = await eventvol.volatility_regime_scan(pairs, event)
-        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        return result
 
     elif name == "list_supported_events":
         result = eventvol.list_supported_events()
-        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        return result
 
     else:
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+        return {"error": f"Unknown tool: {name}"}
 
 # FastAPI / SSE transport setup
 fastapi_app = FastAPI(title="EventVol Intelligence", version="1.0.0")
