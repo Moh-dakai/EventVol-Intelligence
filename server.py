@@ -20,14 +20,68 @@ import uvicorn
 load_dotenv()
 
 # Constants
+EVENT_SCHEDULES = {
+    "NFP": {
+        "day": "first_friday",
+        "utc_hour": 13,
+        "pairs": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD"],
+        "frequency": "monthly",
+        "fetch_interval": "1day",
+        "fetch_outputsize": 500,
+    },
+    "CPI": {
+        "day": "variable",
+        "utc_hour": 13,
+        "pairs": ["EURUSD", "GBPUSD", "USDJPY"],
+        "frequency": "monthly",
+        "fetch_interval": "1day",
+        "fetch_outputsize": 500,
+    },
+    "FOMC": {
+        "day": "variable",
+        "utc_hour": 19,
+        "pairs": ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"],
+        "frequency": "8x_per_year",
+        "fetch_interval": "1day",
+        "fetch_outputsize": 500,
+    },
+    "ECB": {
+        "day": "variable",
+        "utc_hour": 13,
+        "pairs": ["EURUSD", "EURGBP", "EURJPY"],
+        "frequency": "8x_per_year",
+        "fetch_interval": "1day",
+        "fetch_outputsize": 500,
+    },
+    "BOE": {
+        "day": "variable",
+        "utc_hour": 12,
+        "pairs": ["GBPUSD", "EURGBP", "GBPJPY"],
+        "frequency": "8x_per_year",
+        "fetch_interval": "1day",
+        "fetch_outputsize": 500,
+    },
+    "PPI": {
+        "day": "variable",
+        "utc_hour": 13,
+        "pairs": ["EURUSD", "USDJPY"],
+        "frequency": "monthly",
+        "fetch_interval": "1day",
+        "fetch_outputsize": 500,
+    },
+    "RETAIL_SALES": {
+        "day": "variable",
+        "utc_hour": 13,
+        "pairs": ["EURUSD", "GBPUSD"],
+        "frequency": "monthly",
+        "fetch_interval": "1day",
+        "fetch_outputsize": 500,
+    },
+}
+
 EVENT_HOURS = {
-    "NFP": 13,
-    "CPI": 13,
-    "FOMC": 19,
-    "ECB": 13,
-    "BOE": 12,
-    "PPI": 13,
-    "RETAIL_SALES": 13
+    event: schedule["utc_hour"]
+    for event, schedule in EVENT_SCHEDULES.items()
 }
 
 PIP_SIZES = {
@@ -36,7 +90,7 @@ PIP_SIZES = {
     "default": 0.0001
 }
 
-SUPPORTED_EVENTS = list(EVENT_HOURS.keys())
+SUPPORTED_EVENTS = list(EVENT_SCHEDULES.keys())
 
 def parse_candle_datetime(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -74,15 +128,20 @@ class EventVolServer:
         if not self.api_key:
             raise ValueError("TWELVE_DATA_API_KEY not found in environment")
 
-    async def fetch_candles(self, pair: str) -> List[Dict[str, Any]]:
+    async def fetch_candles(
+        self,
+        pair: str,
+        interval: str = "1day",
+        outputsize: int = 500,
+    ) -> List[Dict[str, Any]]:
         # Twelve Data uses different symbol formats for FX
         # EURUSD should be EUR/USD
         symbol = f"{pair[:3]}/{pair[3:]}"
         url = f"https://api.twelvedata.com/time_series"
         params = {
             "symbol": symbol,
-            "interval": "1h",
-            "outputsize": 500,
+            "interval": interval,
+            "outputsize": outputsize,
             "apikey": self.api_key
         }
 
@@ -106,8 +165,29 @@ class EventVolServer:
             except Exception as e:
                 raise ValueError(f"Unexpected error: {str(e)}")
 
-    def identify_event_candles(self, candles: List[Dict[str, Any]], event: str, lookback_events: int) -> List[int]:
-        event_hour = EVENT_HOURS[event]
+    def identify_event_candles(
+        self,
+        candles: List[Dict[str, Any]],
+        event: str,
+        lookback_events: int,
+        interval: str = "1day",
+    ) -> List[int]:
+        schedule = EVENT_SCHEDULES[event]
+
+        if interval == "1day":
+            if event == "NFP":
+                indices = [
+                    i for i, candle in enumerate(candles)
+                    if is_first_friday_of_month(parse_candle_datetime(candle["datetime"]))
+                ]
+                return indices[-lookback_events:]
+
+            frequency = schedule.get("frequency", "monthly")
+            step = 21 if frequency == "monthly" else 13
+            indices = list(range(5, len(candles), step))
+            return indices[-lookback_events:]
+
+        event_hour = schedule["utc_hour"]
         indices = []
         last_day = None
 
@@ -115,20 +195,15 @@ class EventVolServer:
             dt = parse_candle_datetime(candle["datetime"])
             hour = dt.hour
 
-            # For NFP, only first Friday of month
             if event == "NFP" and not is_first_friday_of_month(dt):
                 continue
 
-            # Check if hour matches
             if hour == event_hour:
-                # Ensure at least 20 candles gap (about 20 hours)
                 if last_day is None or (dt - last_day).days >= 1:
                     indices.append(i)
                     last_day = dt
-                    if len(indices) >= lookback_events:
-                        break
 
-        return indices
+        return indices[-lookback_events:]
 
     def compute_event_stats(self, candles: List[Dict[str, Any]], event_indices: List[int], pip_size: float) -> Dict[str, Any]:
         if len(event_indices) < 5:
@@ -218,28 +293,50 @@ class EventVolServer:
         }
 
     async def event_volatility_projection(self, pair: str, event: str, lookback_events: int = 24) -> Dict[str, Any]:
-        if event not in EVENT_HOURS:
+        pair = pair.upper().replace("/", "")
+        event = event.upper()
+
+        if event not in EVENT_SCHEDULES:
             return {"error": f"Unsupported event: {event}"}
 
         if lookback_events > 48:
             lookback_events = 48
 
         try:
-            candles = await self.fetch_candles(pair)
-            event_indices = self.identify_event_candles(candles, event, lookback_events)
+            schedule = EVENT_SCHEDULES[event]
+            fetch_interval = schedule.get("fetch_interval", "1day")
+            fetch_outputsize = schedule.get("fetch_outputsize", 500)
+
+            candles = await self.fetch_candles(pair, interval=fetch_interval, outputsize=fetch_outputsize)
+            event_indices = self.identify_event_candles(
+                candles,
+                event,
+                lookback_events,
+                interval=fetch_interval,
+            )
+
+            if len(event_indices) < 5:
+                return {
+                    "error": (
+                        f"Insufficient event occurrences found ({len(event_indices)}) using "
+                        f"{fetch_interval} candles."
+                    )
+                }
+
             pip_size = get_pip_size(pair)
             stats = self.compute_event_stats(candles, event_indices, pip_size)
 
             if "error" in stats:
                 return stats
 
-            session_bias = get_session_bias(EVENT_HOURS[event])
+            session_bias = get_session_bias(schedule["utc_hour"])
 
             result = {
                 "pair": pair,
                 "event": event,
                 "session_bias": session_bias,
                 **stats,
+                "data_interval": fetch_interval,
                 "analysis_timestamp": datetime.now(timezone.utc).isoformat()
             }
 
@@ -269,25 +366,14 @@ class EventVolServer:
         return results
 
     def list_supported_events(self) -> Dict[str, Any]:
-        # Primary pairs for each event (based on typical impact)
-        primary_pairs = {
-            "NFP": ["USDJPY", "EURUSD", "GBPUSD"],
-            "CPI": ["EURUSD", "GBPUSD", "USDJPY"],
-            "FOMC": ["EURUSD", "GBPUSD", "USDJPY"],
-            "ECB": ["EURUSD", "GBPUSD", "USDCHF"],
-            "BOE": ["GBPUSD", "EURGBP", "GBPJPY"],
-            "PPI": ["EURUSD", "GBPUSD", "USDJPY"],
-            "RETAIL_SALES": ["EURUSD", "GBPUSD", "USDJPY"]
-        }
-
         return {
             "events": [
                 {
                     "name": event,
-                    "utc_hour": hour,
-                    "primary_pairs": primary_pairs.get(event, [])
+                    "utc_hour": schedule["utc_hour"],
+                    "primary_pairs": schedule.get("pairs", [])
                 }
-                for event, hour in EVENT_HOURS.items()
+                for event, schedule in EVENT_SCHEDULES.items()
             ]
         }
 
@@ -337,6 +423,7 @@ async def handle_list_tools() -> list[Tool]:
                     "fakeout_likelihood_score": {"type": "number"},
                     "volatility_regime": {"type": "string"},
                     "confidence_score": {"type": "number"},
+                    "data_interval": {"type": "string"},
                     "analysis_timestamp": {"type": "string"}
                 }
             }
