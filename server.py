@@ -174,13 +174,6 @@ class EventVolServer:
 
         raise ValueError("API request failed after 3 attempts") from last_error
 
-
-class AlreadySentResponse(Response):
-    """No-op response for handlers where the transport already wrote to send()."""
-
-    async def __call__(self, scope, receive, send) -> None:
-        return
-
     def identify_event_candles(
         self,
         candles: List[Dict[str, Any]],
@@ -352,7 +345,6 @@ class AlreadySentResponse(Response):
                 "event": event,
                 "session_bias": session_bias,
                 **stats,
-                "data_interval": fetch_interval,
                 "analysis_timestamp": datetime.now(timezone.utc).isoformat()
             }
 
@@ -393,6 +385,13 @@ class AlreadySentResponse(Response):
             ]
         }
 
+
+class AlreadySentResponse(Response):
+    """No-op response for handlers where the transport already wrote to send()."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        return
+
 mcp_server = Server("eventvol-intelligence")
 
 @mcp_server.list_tools()
@@ -424,8 +423,15 @@ async def handle_list_tools() -> list[Tool]:
             },
             outputSchema={
                 "type": "object",
+                "required": [
+                    "pair", "event", "session_bias", "sample_size",
+                    "expected_deviation_pips", "mean_deviation_pips",
+                    "p75_deviation_pips", "h4_range_median_pips",
+                    "breakout_probability", "mean_reversion_probability",
+                    "fakeout_likelihood_score", "volatility_regime",
+                    "confidence_score", "analysis_timestamp"
+                ],
                 "properties": {
-                    "error": {"type": "string"},
                     "pair": {"type": "string"},
                     "event": {"type": "string"},
                     "session_bias": {"type": "string"},
@@ -439,48 +445,63 @@ async def handle_list_tools() -> list[Tool]:
                     "fakeout_likelihood_score": {"type": "number"},
                     "volatility_regime": {"type": "string"},
                     "confidence_score": {"type": "number"},
-                    "data_interval": {"type": "string"},
-                    "analysis_timestamp": {"type": "string"}
+                    "analysis_timestamp": {"type": "string"},
+                    "error": {"type": "string"}
                 }
             }
         ),
         Tool(
             name="volatility_regime_scan",
-            description="Scan volatility regimes for multiple FX pairs for a given event.",
+            description=(
+                "Scans multiple FX pairs and returns their current volatility regime "
+                "classification (Compressed / Normal / Expansionary) with recent pip "
+                "range stats for a given macro event."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pairs": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of FX pairs to scan"
+                        "description": "List of FX pairs to scan e.g. ['EURUSD','GBPUSD','USDJPY']",
+                        "examples": [["EURUSD", "GBPUSD", "USDJPY"]]
                     },
                     "event": {
                         "type": "string",
-                        "enum": ["NFP", "CPI", "FOMC", "ECB", "BOE", "PPI", "RETAIL_SALES"],
-                        "description": "Macro event"
+                        "description": "Event context for the scan e.g. NFP, CPI, FOMC",
+                        "default": "NFP",
+                        "examples": ["NFP", "CPI", "FOMC"]
                     }
                 },
-                "required": ["pairs", "event"]
+                "required": ["pairs"]
             },
             outputSchema={
                 "type": "object",
+                "required": ["event_context", "results", "timestamp"],
                 "properties": {
+                    "event_context": {
+                        "type": "string",
+                        "description": "The macro event used for the scan"
+                    },
                     "results": {
                         "type": "array",
+                        "description": "Array of volatility regime results per pair",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "pair": {"type": "string"},
-                                "error": {"type": "string"},
-                                "regime": {"type": "string"},
+                                "regime": {
+                                    "type": "string",
+                                    "description": "Compressed | Normal | Expansionary"
+                                },
                                 "median_dev_pips": {"type": "number"},
-                                "confidence": {"type": "number"}
+                                "confidence": {"type": "number"},
+                                "error": {"type": "string"}
                             }
                         }
-                    }
-                },
-                "required": ["results"]
+                    },
+                    "timestamp": {"type": "string"}
+                }
             }
         ),
         Tool(
@@ -529,9 +550,13 @@ async def handle_call_tool(name: str, arguments: dict) -> dict:
 
         if name == "volatility_regime_scan":
             pairs = arguments["pairs"]
-            event = arguments["event"]
+            event = arguments.get("event", "NFP")
             result = await eventvol.volatility_regime_scan(pairs, event)
-            return {"results": result}
+            return {
+                "event_context": event,
+                "results": result,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
 
         if name == "list_supported_events":
             return eventvol.list_supported_events()
