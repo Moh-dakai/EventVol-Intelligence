@@ -1,20 +1,21 @@
+import asyncio
 import json
 import os
+import statistics
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import httpx
+import uvicorn
+from ctxprotocol import ContextError, is_protected_mcp_method, verify_context_request
 from dotenv import load_dotenv
 from mcp import Tool
 from mcp.server import Server
-import statistics
-
-# HTTP/SSE transport imports
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
 from mcp.server.sse import SseServerTransport
-from starlette.types import Receive, Scope, Send
-import uvicorn
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 
 # Load environment variables
 load_dotenv()
@@ -144,12 +145,14 @@ class EventVolServer:
             "outputsize": outputsize,
             "apikey": self.api_key
         }
+        last_error: Exception | None = None
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        for attempt in range(3):
             try:
-                response = await client.get(url, params=params)
-                response.raise_for_status()
-                data = response.json()
+                async with httpx.AsyncClient(timeout=25.0) as client:
+                    response = await client.get(url, params=params)
+                    response.raise_for_status()
+                    data = response.json()
 
                 if "values" not in data:
                     raise ValueError(f"API error: {data.get('message', 'No values returned')}")
@@ -158,12 +161,25 @@ class EventVolServer:
                 values = data["values"]
                 values.sort(key=lambda candle: parse_candle_datetime(candle["datetime"]))
                 return values
-            except httpx.TimeoutException:
-                raise ValueError("API request timed out")
-            except httpx.HTTPStatusError as e:
-                raise ValueError(f"API error: {e.response.status_code} - {e.response.text}")
-            except Exception as e:
-                raise ValueError(f"Unexpected error: {str(e)}")
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(attempt + 1)
+                    continue
+                raise ValueError("API request failed after 3 attempts") from exc
+            except httpx.HTTPStatusError as exc:
+                raise ValueError(f"API error: {exc.response.status_code} - {exc.response.text}") from exc
+            except Exception as exc:
+                raise ValueError(f"Unexpected error: {str(exc)}") from exc
+
+        raise ValueError("API request failed after 3 attempts") from last_error
+
+
+class AlreadySentResponse(Response):
+    """No-op response for handlers where the transport already wrote to send()."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        return
 
     def identify_event_candles(
         self,
@@ -501,34 +517,55 @@ async def handle_list_tools() -> list[Tool]:
 @mcp_server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> dict:
     """Handle tool calls."""
-    eventvol = EventVolServer()
+    try:
+        eventvol = EventVolServer()
 
-    if name == "event_volatility_projection":
-        pair = arguments["pair"]
-        event = arguments["event"]
-        lookback_events = arguments.get("lookback_events", 24)
-        result = await eventvol.event_volatility_projection(pair, event, lookback_events)
-        return result
+        if name == "event_volatility_projection":
+            pair = arguments["pair"]
+            event = arguments["event"]
+            lookback_events = arguments.get("lookback_events", 24)
+            result = await eventvol.event_volatility_projection(pair, event, lookback_events)
+            return result
 
-    elif name == "volatility_regime_scan":
-        pairs = arguments["pairs"]
-        event = arguments["event"]
-        result = await eventvol.volatility_regime_scan(pairs, event)
-        return {"results": result}
+        if name == "volatility_regime_scan":
+            pairs = arguments["pairs"]
+            event = arguments["event"]
+            result = await eventvol.volatility_regime_scan(pairs, event)
+            return {"results": result}
 
-    elif name == "list_supported_events":
-        result = eventvol.list_supported_events()
-        return result
+        if name == "list_supported_events":
+            return eventvol.list_supported_events()
 
-    else:
         return {"error": f"Unknown tool: {name}"}
+    except Exception as exc:
+        return {
+            "error": f"Internal server error: {str(exc)}",
+            "tool": name,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
 
-# FastAPI / SSE transport setup
-fastapi_app = FastAPI(title="EventVol Intelligence", version="1.0.0")
-sse_transport = SseServerTransport("/messages/")
 
-@fastapi_app.get("/")
-async def root():
+sse_transport = SseServerTransport("/messages")
+
+
+async def keepalive():
+    """Ping /health every 4 minutes to reduce cold-start failures on Railway."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            port = int(os.environ.get("PORT", 8000))
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.get(f"http://127.0.0.1:{port}/health")
+        except Exception:
+            pass
+        await asyncio.sleep(240)
+
+
+async def start_keepalive():
+    asyncio.create_task(keepalive())
+
+
+async def handle_root(request: Request):
     return JSONResponse({
         "name": "EventVol Intelligence",
         "description": "Event-Adjusted FX Volatility Projection Engine. Provides expected pip deviation, breakout probability, fakeout score, and volatility regime for FX pairs around macro events (NFP, CPI, FOMC, ECB, BOE).",
@@ -542,12 +579,12 @@ async def root():
         "author": "EventVol"
     })
 
-@fastapi_app.get("/health")
-async def health():
+
+async def handle_health(request: Request):
     return JSONResponse({"status": "ok"})
 
-@fastapi_app.get("/sse")
-async def sse_endpoint(request: Request):
+
+async def handle_sse(request: Request):
     async with sse_transport.connect_sse(
         request.scope, request.receive, request._send
     ) as streams:
@@ -555,20 +592,64 @@ async def sse_endpoint(request: Request):
             streams[0], streams[1],
             mcp_server.create_initialization_options()
         )
-    # Return an empty response after SSE disconnect to avoid FastAPI trying
-    # to serialize None.
+    # Return an empty response after SSE disconnect so Starlette has a response object.
     return Response()
 
-async def messages_asgi(scope: Scope, receive: Receive, send: Send):
-    if scope["type"] == "http" and scope["method"] != "POST":
-        response = Response("Method Not Allowed", status_code=405)
-        await response(scope, receive, send)
-        return
-    await sse_transport.handle_post_message(scope, receive, send)
 
-# Mount POST messages handler as raw ASGI app. It writes responses directly.
-fastapi_app.mount("/messages/", messages_asgi)
+async def handle_messages(request: Request):
+    """Handle MCP JSON-RPC messages with Context Protocol auth on tool calls."""
+    body_bytes = await request.body()
+
+    try:
+        body_json = json.loads(body_bytes)
+        method = body_json.get("method", "")
+    except Exception:
+        method = ""
+        body_json = {}
+
+    if is_protected_mcp_method(method):
+        try:
+            await verify_context_request(
+                authorization_header=request.headers.get("authorization", "")
+            )
+        except ContextError as exc:
+            return JSONResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32001,
+                        "message": f"Unauthorized: {exc.message}",
+                    },
+                    "id": body_json.get("id"),
+                },
+                status_code=401,
+            )
+
+    async def receive():
+        return {
+            "type": "http.request",
+            "body": body_bytes,
+            "more_body": False,
+        }
+
+    await sse_transport.handle_post_message(
+        request.scope,
+        receive,
+        request._send,
+    )
+    return AlreadySentResponse()
+
+
+app = Starlette(
+    routes=[
+        Route("/", handle_root),
+        Route("/health", handle_health),
+        Route("/sse", handle_sse),
+        Route("/messages", handle_messages, methods=["POST"]),
+    ],
+    on_startup=[start_keepalive],
+)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
