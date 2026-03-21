@@ -622,45 +622,57 @@ async def handle_sse(request: Request):
 
 
 async def handle_messages(request: Request):
-    """Handle MCP JSON-RPC messages with Context Protocol auth on tool calls."""
+    """
+    Handle MCP JSON-RPC messages.
+    Enforces Context Protocol JWT auth on tools/call only.
+    Discovery methods (tools/list, initialize) remain open.
+    Body is replayed so the SSE transport can still read the payload.
+    """
+    # Read body once
     body_bytes = await request.body()
 
+    # Parse the JSON-RPC method name
     try:
         body_json = json.loads(body_bytes)
         method = body_json.get("method", "")
     except Exception:
-        method = ""
         body_json = {}
+        method = ""
 
+    # Only enforce auth on protected methods (tools/call)
+    # is_protected_mcp_method returns True for tools/call, False for everything else
     if is_protected_mcp_method(method):
         try:
             await verify_context_request(
                 authorization_header=request.headers.get("authorization", "")
             )
-        except ContextError as exc:
+        except ContextError as e:
             return JSONResponse(
                 {
                     "jsonrpc": "2.0",
                     "error": {
                         "code": -32001,
-                        "message": f"Unauthorized: {exc.message}",
+                        "message": f"Unauthorized: {e.message}"
                     },
-                    "id": body_json.get("id"),
+                    "id": body_json.get("id")
                 },
-                status_code=401,
+                status_code=401
             )
 
+    # Replay the body so the SSE transport can read it
+    # (we already consumed request.body() above, so we must reconstruct receive)
     async def receive():
         return {
             "type": "http.request",
             "body": body_bytes,
-            "more_body": False,
+            "more_body": False
         }
 
+    # Pass to MCP SSE transport
     await sse_transport.handle_post_message(
         request.scope,
-        receive,
-        request._send,
+        receive,        # reconstructed receive — NOT request.receive
+        request._send
     )
     return AlreadySentResponse()
 
