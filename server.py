@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import statistics
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -586,8 +587,17 @@ async def keepalive():
         await asyncio.sleep(240)
 
 
-async def start_keepalive():
-    asyncio.create_task(keepalive())
+@asynccontextmanager
+async def lifespan(app: Starlette):
+    keepalive_task = asyncio.create_task(keepalive())
+    try:
+        yield
+    finally:
+        keepalive_task.cancel()
+        try:
+            await keepalive_task
+        except asyncio.CancelledError:
+            pass
 
 
 async def handle_root(request: Request):
@@ -684,7 +694,7 @@ app = Starlette(
         Route("/sse", handle_sse),
         Route("/messages", handle_messages, methods=["POST"]),
     ],
-    on_startup=[start_keepalive],
+    lifespan=lifespan,
 )
 
 if __name__ == "__main__":
