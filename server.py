@@ -21,70 +21,173 @@ from starlette.routing import Route
 # Load environment variables
 load_dotenv()
 
-# Constants
-EVENT_SCHEDULES = {
+# -----------------------------------------------------------------
+# Economic Calendar  — real historical UTC release datetimes
+# Format: "YYYY-MM-DDTHH:MM"  (UTC, no seconds needed)
+# Sources: BLS.gov release calendar, Federal Reserve, ECB, BOE
+# -----------------------------------------------------------------
+EVENT_RELEASE_DATES: dict[str, dict] = {
+    # ---------- NFP: first Friday of each month at 13:30 UTC ----------
     "NFP": {
-        "day": "first_friday",
         "utc_hour": 13,
         "pairs": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD"],
-        "frequency": "monthly",
-        "fetch_interval": "1day",
-        "fetch_outputsize": 500,
+        "releases": [
+            "2022-01-07T13:30", "2022-02-04T13:30", "2022-03-04T13:30",
+            "2022-04-01T13:30", "2022-05-06T13:30", "2022-06-03T13:30",
+            "2022-07-08T13:30", "2022-08-05T13:30", "2022-09-02T13:30",
+            "2022-10-07T13:30", "2022-11-04T13:30", "2022-12-02T13:30",
+            "2023-01-06T13:30", "2023-02-03T13:30", "2023-03-10T13:30",
+            "2023-04-07T13:30", "2023-05-05T13:30", "2023-06-02T13:30",
+            "2023-07-07T13:30", "2023-08-04T13:30", "2023-09-01T13:30",
+            "2023-10-06T13:30", "2023-11-03T13:30", "2023-12-08T13:30",
+            "2024-01-05T13:30", "2024-02-02T13:30", "2024-03-08T13:30",
+            "2024-04-05T13:30", "2024-05-03T13:30", "2024-06-07T13:30",
+            "2024-07-05T13:30", "2024-08-02T13:30", "2024-09-06T13:30",
+            "2024-10-04T13:30", "2024-11-01T13:30", "2024-12-06T13:30",
+            "2025-01-10T13:30", "2025-02-07T13:30", "2025-03-07T13:30",
+            "2025-04-04T13:30", "2025-05-02T13:30", "2025-06-06T13:30",
+            "2025-07-03T13:30", "2025-08-01T13:30", "2025-09-05T13:30",
+            "2025-10-03T13:30", "2025-11-07T13:30", "2025-12-05T13:30",
+            "2026-01-09T13:30", "2026-02-06T13:30", "2026-03-06T13:30",
+        ],
     },
+    # ---------- CPI: variable mid-month at 13:30 UTC (BLS schedule) ----------
     "CPI": {
-        "day": "variable",
         "utc_hour": 13,
         "pairs": ["EURUSD", "GBPUSD", "USDJPY"],
-        "frequency": "monthly",
-        "fetch_interval": "1day",
-        "fetch_outputsize": 500,
+        "releases": [
+            "2022-01-12T13:30", "2022-02-10T13:30", "2022-03-10T13:30",
+            "2022-04-12T13:30", "2022-05-11T13:30", "2022-06-10T13:30",
+            "2022-07-13T13:30", "2022-08-10T13:30", "2022-09-13T13:30",
+            "2022-10-13T13:30", "2022-11-10T13:30", "2022-12-13T13:30",
+            "2023-01-12T13:30", "2023-02-14T13:30", "2023-03-14T13:30",
+            "2023-04-12T13:30", "2023-05-10T13:30", "2023-06-13T13:30",
+            "2023-07-12T13:30", "2023-08-10T13:30", "2023-09-13T13:30",
+            "2023-10-12T13:30", "2023-11-14T13:30", "2023-12-12T13:30",
+            "2024-01-11T13:30", "2024-02-13T13:30", "2024-03-12T13:30",
+            "2024-04-10T13:30", "2024-05-15T13:30", "2024-06-12T13:30",
+            "2024-07-11T13:30", "2024-08-14T13:30", "2024-09-11T13:30",
+            "2024-10-10T13:30", "2024-11-13T13:30", "2024-12-11T13:30",
+            "2025-01-15T13:30", "2025-02-12T13:30", "2025-03-12T13:30",
+            "2025-04-10T13:30", "2025-05-13T13:30", "2025-06-11T13:30",
+            "2025-07-15T13:30", "2025-08-12T13:30", "2025-09-10T13:30",
+            "2025-10-15T13:30", "2025-11-13T13:30", "2025-12-10T13:30",
+            "2026-01-14T13:30", "2026-02-12T13:30", "2026-03-11T13:30",
+        ],
     },
+    # ---------- FOMC: 8 meetings per year, statement at ~19:00 UTC ----------
     "FOMC": {
-        "day": "variable",
         "utc_hour": 19,
         "pairs": ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"],
-        "frequency": "8x_per_year",
-        "fetch_interval": "1day",
-        "fetch_outputsize": 500,
+        "releases": [
+            "2022-01-26T19:00", "2022-03-16T19:00", "2022-05-04T19:00",
+            "2022-06-15T19:00", "2022-07-27T19:00", "2022-09-21T19:00",
+            "2022-11-02T19:00", "2022-12-14T19:00",
+            "2023-02-01T19:00", "2023-03-22T19:00", "2023-05-03T19:00",
+            "2023-06-14T19:00", "2023-07-26T19:00", "2023-09-20T19:00",
+            "2023-11-01T19:00", "2023-12-13T19:00",
+            "2024-01-31T19:00", "2024-03-20T19:00", "2024-05-01T19:00",
+            "2024-06-12T19:00", "2024-07-31T19:00", "2024-09-18T19:00",
+            "2024-11-07T19:00", "2024-12-18T19:00",
+            "2025-01-29T19:00", "2025-03-19T19:00",
+            "2025-05-07T19:00", "2025-06-18T19:00", "2025-07-30T19:00",
+            "2025-09-17T19:00", "2025-10-29T19:00", "2025-12-10T19:00",
+            "2026-01-28T19:00", "2026-03-18T19:00",
+        ],
     },
+    # ---------- ECB: 8 meetings per year, decision at ~13:15 UTC ----------
     "ECB": {
-        "day": "variable",
         "utc_hour": 13,
         "pairs": ["EURUSD", "EURGBP", "EURJPY"],
-        "frequency": "8x_per_year",
-        "fetch_interval": "1day",
-        "fetch_outputsize": 500,
+        "releases": [
+            "2022-02-03T13:15", "2022-03-10T13:15", "2022-04-14T13:15",
+            "2022-06-09T13:15", "2022-07-21T13:15", "2022-09-08T13:15",
+            "2022-10-27T13:15", "2022-12-15T13:15",
+            "2023-02-02T13:15", "2023-03-16T13:15", "2023-05-04T13:15",
+            "2023-06-15T13:15", "2023-07-27T13:15", "2023-09-14T13:15",
+            "2023-10-26T13:15", "2023-12-14T13:15",
+            "2024-01-25T13:15", "2024-03-07T13:15", "2024-04-11T13:15",
+            "2024-06-06T13:15", "2024-07-18T13:15", "2024-09-12T13:15",
+            "2024-10-17T13:15", "2024-12-12T13:15",
+            "2025-01-30T13:15", "2025-03-06T13:15",
+            "2025-04-17T13:15", "2025-06-05T13:15", "2025-07-24T13:15",
+            "2025-09-11T13:15", "2025-10-30T13:15", "2025-12-11T13:15",
+            "2026-01-29T13:15", "2026-03-05T13:15",
+        ],
     },
+    # ---------- BOE: 8 meetings per year, announcement at ~12:00 UTC ----------
     "BOE": {
-        "day": "variable",
         "utc_hour": 12,
         "pairs": ["GBPUSD", "EURGBP", "GBPJPY"],
-        "frequency": "8x_per_year",
-        "fetch_interval": "1day",
-        "fetch_outputsize": 500,
+        "releases": [
+            "2022-02-03T12:00", "2022-03-17T12:00", "2022-05-05T12:00",
+            "2022-06-16T12:00", "2022-08-04T12:00", "2022-09-22T12:00",
+            "2022-11-03T12:00", "2022-12-15T12:00",
+            "2023-02-02T12:00", "2023-03-23T12:00", "2023-05-11T12:00",
+            "2023-06-22T12:00", "2023-08-03T12:00", "2023-09-21T12:00",
+            "2023-11-02T12:00", "2023-12-14T12:00",
+            "2024-02-01T12:00", "2024-03-21T12:00", "2024-05-09T12:00",
+            "2024-06-20T12:00", "2024-08-01T12:00", "2024-09-19T12:00",
+            "2024-11-07T12:00", "2024-12-19T12:00",
+            "2025-02-06T12:00", "2025-03-20T12:00",
+            "2025-05-08T12:00", "2025-06-19T12:00", "2025-08-07T12:00",
+            "2025-09-18T12:00", "2025-11-06T12:00", "2025-12-18T12:00",
+            "2026-02-05T12:00", "2026-03-19T12:00",
+        ],
     },
+    # ---------- PPI: variable mid-month at 13:30 UTC (BLS schedule) ----------
     "PPI": {
-        "day": "variable",
         "utc_hour": 13,
         "pairs": ["EURUSD", "USDJPY"],
-        "frequency": "monthly",
-        "fetch_interval": "1day",
-        "fetch_outputsize": 500,
+        "releases": [
+            "2022-01-13T13:30", "2022-02-15T13:30", "2022-03-15T13:30",
+            "2022-04-13T13:30", "2022-05-12T13:30", "2022-06-14T13:30",
+            "2022-07-14T13:30", "2022-08-11T13:30", "2022-09-14T13:30",
+            "2022-10-12T13:30", "2022-11-15T13:30", "2022-12-09T13:30",
+            "2023-01-18T13:30", "2023-02-16T13:30", "2023-03-15T13:30",
+            "2023-04-13T13:30", "2023-05-11T13:30", "2023-06-14T13:30",
+            "2023-07-13T13:30", "2023-08-11T13:30", "2023-09-14T13:30",
+            "2023-10-11T13:30", "2023-11-15T13:30", "2023-12-08T13:30",
+            "2024-01-12T13:30", "2024-02-16T13:30", "2024-03-14T13:30",
+            "2024-04-11T13:30", "2024-05-14T13:30", "2024-06-13T13:30",
+            "2024-07-12T13:30", "2024-08-13T13:30", "2024-09-12T13:30",
+            "2024-10-11T13:30", "2024-11-14T13:30", "2024-12-12T13:30",
+            "2025-01-14T13:30", "2025-02-13T13:30", "2025-03-13T13:30",
+            "2025-04-11T13:30", "2025-05-15T13:30", "2025-06-12T13:30",
+            "2025-07-15T13:30", "2025-08-14T13:30", "2025-09-11T13:30",
+            "2025-10-14T13:30", "2025-11-13T13:30", "2025-12-11T13:30",
+            "2026-01-15T13:30", "2026-02-12T13:30", "2026-03-12T13:30",
+        ],
     },
+    # ---------- RETAIL SALES: variable mid-month at 13:30 UTC ----------
     "RETAIL_SALES": {
-        "day": "variable",
         "utc_hour": 13,
         "pairs": ["EURUSD", "GBPUSD"],
-        "frequency": "monthly",
-        "fetch_interval": "1day",
-        "fetch_outputsize": 500,
+        "releases": [
+            "2022-01-14T13:30", "2022-02-16T13:30", "2022-03-16T13:30",
+            "2022-04-14T13:30", "2022-05-17T13:30", "2022-06-15T13:30",
+            "2022-07-15T13:30", "2022-08-17T13:30", "2022-09-15T13:30",
+            "2022-10-14T13:30", "2022-11-16T13:30", "2022-12-15T13:30",
+            "2023-01-18T13:30", "2023-02-15T13:30", "2023-03-15T13:30",
+            "2023-04-14T13:30", "2023-05-16T13:30", "2023-06-15T13:30",
+            "2023-07-18T13:30", "2023-08-15T13:30", "2023-09-15T13:30",
+            "2023-10-17T13:30", "2023-11-15T13:30", "2023-12-14T13:30",
+            "2024-01-17T13:30", "2024-02-15T13:30", "2024-03-14T13:30",
+            "2024-04-15T13:30", "2024-05-15T13:30", "2024-06-18T13:30",
+            "2024-07-16T13:30", "2024-08-15T13:30", "2024-09-17T13:30",
+            "2024-10-17T13:30", "2024-11-15T13:30", "2024-12-17T13:30",
+            "2025-01-16T13:30", "2025-02-14T13:30", "2025-03-17T13:30",
+            "2025-04-16T13:30", "2025-05-15T13:30", "2025-06-17T13:30",
+            "2025-07-16T13:30", "2025-08-15T13:30", "2025-09-17T13:30",
+            "2025-10-17T13:30", "2025-11-14T13:30", "2025-12-16T13:30",
+            "2026-01-15T13:30", "2026-02-18T13:30", "2026-03-17T13:30",
+        ],
     },
 }
 
-EVENT_HOURS = {
-    event: schedule["utc_hour"]
-    for event, schedule in EVENT_SCHEDULES.items()
-}
+# All 1h intraday — 5000 candles covers ~208 days (~7 months)
+_FETCH_INTERVAL = "1h"
+_FETCH_OUTPUTSIZE = 5000
 
 PIP_SIZES = {
     "JPY": 0.01,
@@ -92,10 +195,15 @@ PIP_SIZES = {
     "default": 0.0001
 }
 
-SUPPORTED_EVENTS = list(EVENT_SCHEDULES.keys())
+SUPPORTED_EVENTS = list(EVENT_RELEASE_DATES.keys())
 
 def parse_candle_datetime(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    # Twelve Data returns naive datetimes for forex (no TZ suffix).
+    # Treat them as UTC so they compare correctly against our awareness-aware release dates.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 def get_pip_size(pair: str) -> float:
     if "JPY" in pair:
@@ -117,11 +225,14 @@ def get_session_bias(hour: int) -> str:
     else:
         return "AfterHours"
 
+def parse_release_dt(s: str) -> datetime:
+    """Parse a calendar entry like '2024-03-08T13:30' into a UTC-aware datetime."""
+    return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+
+
 def is_first_friday_of_month(dt: datetime) -> bool:
-    # Check if it's Friday and the first Friday of the month
     if dt.weekday() != 4:  # 0=Monday, 4=Friday
         return False
-    # Check if it's the first Friday: day <= 7
     return dt.day <= 7
 
 class EventVolServer:
@@ -178,79 +289,95 @@ class EventVolServer:
     def identify_event_candles(
         self,
         candles: List[Dict[str, Any]],
-        event: str,
+        release_dts: List[datetime],
         lookback_events: int,
-        interval: str = "1day",
     ) -> List[int]:
-        schedule = EVENT_SCHEDULES[event]
+        """
+        Match each real release datetime to the nearest 1h candle whose
+        datetime is <= the release time (i.e. the candle that was open
+        at the moment of the release).
 
-        if interval == "1day":
-            if event == "NFP":
-                indices = [
-                    i for i, candle in enumerate(candles)
-                    if is_first_friday_of_month(parse_candle_datetime(candle["datetime"]))
-                ]
-                return indices[-lookback_events:]
+        Returns a list of candle indices (oldest first), capped at
+        lookback_events entries, covering only releases whose candle
+        falls inside the fetched window.
+        """
+        # Build a lookup: candle datetime -> index
+        candle_dts = [
+            (parse_candle_datetime(c["datetime"]), i)
+            for i, c in enumerate(candles)
+        ]
+        # candles are already sorted oldest->newest
 
-            frequency = schedule.get("frequency", "monthly")
-            step = 21 if frequency == "monthly" else 13
-            indices = list(range(5, len(candles), step))
-            return indices[-lookback_events:]
+        matched_indices = []
+        for release_dt in sorted(release_dts):
+            # Find the last candle whose datetime <= release_dt
+            best_idx = None
+            for c_dt, c_idx in candle_dts:
+                if c_dt <= release_dt:
+                    best_idx = c_idx
+                else:
+                    break  # candles sorted, no need to go further
+            if best_idx is not None:
+                matched_indices.append(best_idx)
 
-        event_hour = schedule["utc_hour"]
-        indices = []
-        last_day = None
+        # Deduplicate (in case two releases landed on the same candle)
+        seen = set()
+        deduped = []
+        for idx in matched_indices:
+            if idx not in seen:
+                seen.add(idx)
+                deduped.append(idx)
 
-        for i, candle in enumerate(candles):
-            dt = parse_candle_datetime(candle["datetime"])
-            hour = dt.hour
+        return deduped[-lookback_events:]
 
-            if event == "NFP" and not is_first_friday_of_month(dt):
-                continue
-
-            if hour == event_hour:
-                if last_day is None or (dt - last_day).days >= 1:
-                    indices.append(i)
-                    last_day = dt
-
-        return indices[-lookback_events:]
-
-    def compute_event_stats(self, candles: List[Dict[str, Any]], event_indices: List[int], pip_size: float) -> Dict[str, Any]:
+    def compute_event_stats(self, candles: List[Dict[str, Any]], event_indices: List[int], pip_size: float, window_h: int = 4) -> Dict[str, Any]:
         if len(event_indices) < 5:
             return {
                 "error": "Insufficient data: fewer than 5 event instances found",
                 "sample_size": len(event_indices)
             }
 
-        h1_ranges = []
-        h4_ranges = []
+        # immediate_ranges  = high/low range of the release candle + 2h (the spike)
+        # extended_ranges   = high/low range of release candle + window_h (full reaction)
+        immediate_ranges = []
+        extended_ranges = []
         breakouts = 0
         fakeouts = 0
 
+        imm_window = 2   # 2 candles (2h) for immediate spike measurement
+        ext_window = window_h  # default 4h for extended reaction
+
         for i in event_indices:
-            if i + 4 >= len(candles):
-                continue  # Not enough candles for 4H analysis
+            # Need at least ext_window candles ahead
+            if i + ext_window >= len(candles):
+                continue
 
-            # 1H range: candles i to i+1
-            h1_high = max(float(candles[j]["high"]) for j in range(i, i+2) if j < len(candles))
-            h1_low = min(float(candles[j]["low"]) for j in range(i, i+2) if j < len(candles))
-            h1_range = (h1_high - h1_low) / pip_size
-            h1_ranges.append(h1_range)
+            # --- Immediate reaction: release candle + next 2 candles (0–2h) ---
+            imm_end = min(i + imm_window + 1, len(candles))
+            imm_high = max(float(candles[j]["high"]) for j in range(i, imm_end))
+            imm_low  = min(float(candles[j]["low"])  for j in range(i, imm_end))
+            immediate_ranges.append((imm_high - imm_low) / pip_size)
 
-            # 4H range: candles i to i+4
-            h4_high = max(float(candles[j]["high"]) for j in range(i, i+5) if j < len(candles))
-            h4_low = min(float(candles[j]["low"]) for j in range(i, i+5) if j < len(candles))
-            h4_range = (h4_high - h4_low) / pip_size
-            h4_ranges.append(h4_range)
+            # --- Extended reaction: release candle + next ext_window candles ---
+            ext_end = min(i + ext_window + 1, len(candles))
+            ext_high = max(float(candles[j]["high"]) for j in range(i, ext_end))
+            ext_low  = min(float(candles[j]["low"])  for j in range(i, ext_end))
+            extended_ranges.append((ext_high - ext_low) / pip_size)
 
-            # Direction: 1 if close[i+4] > open[i], else -1
-            h1_direction = 1 if float(candles[i+1]["close"]) > float(candles[i]["open"]) else -1
-            h4_direction = 1 if float(candles[i+4]["close"]) > float(candles[i]["open"]) else -1
+            # Direction: close of the 2h candle vs open of the release candle
+            imm_last = min(i + imm_window, len(candles) - 1)
+            ext_last = min(i + ext_window, len(candles) - 1)
+            imm_direction = 1 if float(candles[imm_last]["close"]) > float(candles[i]["open"]) else -1
+            ext_direction = 1 if float(candles[ext_last]["close"]) > float(candles[i]["open"]) else -1
 
-            if h1_direction == h4_direction:
+            if imm_direction == ext_direction:
                 breakouts += 1
             else:
                 fakeouts += 1
+
+        # Rename for clarity in aggregation (keep old variable names for compat)
+        h1_ranges = immediate_ranges
+        h4_ranges = extended_ranges
 
         total = breakouts + fakeouts
         if total == 0:
@@ -306,30 +433,35 @@ class EventVolServer:
         pair = pair.upper().replace("/", "")
         event = event.upper()
 
-        if event not in EVENT_SCHEDULES:
+        if event not in EVENT_RELEASE_DATES:
             return {"error": f"Unsupported event: {event}"}
 
         if lookback_events > 48:
             lookback_events = 48
 
         try:
-            schedule = EVENT_SCHEDULES[event]
-            fetch_interval = schedule.get("fetch_interval", "1day")
-            fetch_outputsize = schedule.get("fetch_outputsize", 500)
+            event_info = EVENT_RELEASE_DATES[event]
+            release_dts = [parse_release_dt(s) for s in event_info["releases"]]
 
-            candles = await self.fetch_candles(pair, interval=fetch_interval, outputsize=fetch_outputsize)
+            # All events now use 1h candles for accurate event-window measurement
+            candles = await self.fetch_candles(
+                pair,
+                interval=_FETCH_INTERVAL,
+                outputsize=_FETCH_OUTPUTSIZE,
+            )
+
             event_indices = self.identify_event_candles(
                 candles,
-                event,
+                release_dts,
                 lookback_events,
-                interval=fetch_interval,
             )
 
             if len(event_indices) < 5:
                 return {
                     "error": (
-                        f"Insufficient event occurrences found ({len(event_indices)}) using "
-                        f"{fetch_interval} candles."
+                        f"Insufficient event occurrences found ({len(event_indices)}) in "
+                        f"the available 1h candle window. "
+                        f"Reduce lookback_events or try again later."
                     )
                 }
 
@@ -339,7 +471,7 @@ class EventVolServer:
             if "error" in stats:
                 return stats
 
-            session_bias = get_session_bias(schedule["utc_hour"])
+            session_bias = get_session_bias(event_info["utc_hour"])
 
             result = {
                 "pair": pair,
@@ -356,10 +488,10 @@ class EventVolServer:
         except Exception as e:
             return {"error": f"Unexpected error: {str(e)}"}
 
-    async def volatility_regime_scan(self, pairs: List[str], event: str) -> List[Dict[str, Any]]:
+    async def volatility_regime_scan(self, pairs: List[str], event: str, lookback_events: int = 24) -> List[Dict[str, Any]]:
         results = []
         for pair in pairs:
-            projection = await self.event_volatility_projection(pair, event, 24)
+            projection = await self.event_volatility_projection(pair, event, lookback_events)
             if "error" in projection:
                 results.append({
                     "pair": pair,
@@ -375,16 +507,23 @@ class EventVolServer:
         return results
 
     def list_supported_events(self) -> Dict[str, Any]:
-        return {
-            "events": [
-                {
-                    "name": event,
-                    "utc_hour": schedule["utc_hour"],
-                    "primary_pairs": schedule.get("pairs", [])
-                }
-                for event, schedule in EVENT_SCHEDULES.items()
+        now_utc = datetime.now(timezone.utc)
+        events_out = []
+        for event, info in EVENT_RELEASE_DATES.items():
+            # Find next upcoming release
+            future = [
+                s for s in info["releases"]
+                if parse_release_dt(s) > now_utc
             ]
-        }
+            next_release = min(future, default=None)
+            events_out.append({
+                "name": event,
+                "utc_hour": info["utc_hour"],
+                "primary_pairs": info.get("pairs", []),
+                "next_release_utc": next_release,
+                "total_releases_in_calendar": len(info["releases"]),
+            })
+        return {"events": events_out}
 
 
 class AlreadySentResponse(Response):
