@@ -3,7 +3,7 @@ import json
 import os
 import statistics
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 import httpx
@@ -20,6 +20,18 @@ from starlette.routing import Route
 
 # Load environment variables
 load_dotenv()
+
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
+FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
+FINNHUB_EVENT_MAP = {
+    "NFP": "Nonfarm Payrolls",
+    "CPI": "Consumer Price Index",
+    "FOMC": "Fed Interest Rate Decision",
+    "ECB": "ECB Interest Rate Decision",
+    "BOE": "BoE Interest Rate Decision",
+    "PPI": "Producer Price Index",
+    "RETAIL_SALES": "Retail Sales",
+}
 
 # -----------------------------------------------------------------
 # Economic Calendar  — real historical UTC release datetimes
@@ -252,6 +264,76 @@ def find_candle_index_for_event(candles: list[dict], event_dt: datetime) -> int 
 
     return None
 
+
+async def fetch_event_dates_from_finnhub(event: str, lookback_months: int = 24) -> list[datetime]:
+    """
+    Fetch real historical event release dates from Finnhub Economic Calendar.
+    Returns list of datetimes sorted most-recent-first.
+    """
+    keyword = FINNHUB_EVENT_MAP.get(event.upper())
+    if not keyword or not FINNHUB_API_KEY:
+        return []
+
+    all_dates: list[datetime] = []
+    end_date = datetime.utcnow()
+    start_date = end_date - timedelta(days=lookback_months * 30)
+
+    chunk_end = end_date
+    while chunk_end > start_date:
+        chunk_start = max(chunk_end - timedelta(days=180), start_date)
+        params = {
+            "from": chunk_start.strftime("%Y-%m-%d"),
+            "to": chunk_end.strftime("%Y-%m-%d"),
+            "token": FINNHUB_API_KEY,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    f"{FINNHUB_BASE_URL}/calendar/economic",
+                    params=params,
+                )
+                response.raise_for_status()
+                data = response.json()
+        except Exception:
+            chunk_end = chunk_start
+            continue
+
+        for calendar_event in data.get("economicCalendar", []):
+            event_name = calendar_event.get("event", "")
+            if keyword.lower() not in event_name.lower():
+                continue
+
+            country = calendar_event.get("country", "").upper()
+            if country not in ("US", "USA", "UNITED STATES", "EU", "GB", "UK"):
+                continue
+
+            time_str = calendar_event.get("time", "")
+            if not time_str:
+                continue
+
+            try:
+                parsed = datetime.strptime(
+                    time_str[:16].replace("T", " "),
+                    "%Y-%m-%d %H:%M",
+                )
+                all_dates.append(parsed)
+            except Exception:
+                continue
+
+        chunk_end = chunk_start
+
+    seen_dates = set()
+    unique_dates = []
+    for event_dt in sorted(all_dates, reverse=True):
+        date_key = event_dt.strftime("%Y-%m-%d")
+        if date_key in seen_dates:
+            continue
+        seen_dates.add(date_key)
+        unique_dates.append(event_dt)
+
+    return unique_dates
+
 class EventVolServer:
     def __init__(self):
         self.api_key = os.getenv("TWELVE_DATA_API_KEY")
@@ -406,14 +488,33 @@ class EventVolServer:
         pair = pair.upper().replace("/", "")
         event = event.upper()
 
-        if event not in HARDCODED_EVENT_DATES:
-            return {"error": f"Unsupported event: {event}"}
-
         lookback_events = min(int(lookback_events), 48)
 
+        if event not in FINNHUB_EVENT_MAP:
+            return {
+                "pair": pair,
+                "event": event,
+                "success": False,
+                "error": f"Event '{event}' not supported. Use: {list(FINNHUB_EVENT_MAP.keys())}",
+            }
+
         try:
-            all_event_dates = sorted(HARDCODED_EVENT_DATES[event], reverse=True)
-            event_dates = all_event_dates[:lookback_events]
+            event_dates = await fetch_event_dates_from_finnhub(event, lookback_months=24)
+            if len(event_dates) < 5 and event in HARDCODED_EVENT_DATES:
+                event_dates = sorted(HARDCODED_EVENT_DATES[event], reverse=True)
+
+            event_dates = event_dates[:lookback_events]
+
+            if len(event_dates) < 5:
+                return {
+                    "pair": pair,
+                    "event": event,
+                    "success": False,
+                    "error": (
+                        f"Insufficient event dates found ({len(event_dates)}). "
+                        "Check FINNHUB_API_KEY is set in Railway environment variables."
+                    ),
+                }
 
             candles = await self.fetch_candles(
                 pair,
@@ -433,30 +534,50 @@ class EventVolServer:
 
             if len(event_indices) < 5:
                 return {
+                    "pair": pair,
+                    "event": event,
+                    "success": False,
                     "error": (
-                        f"Only {len(event_indices)} event dates matched candle data. "
-                        f"Need at least 5. The pair may lack sufficient history on Twelve Data free tier. "
+                        f"Only {len(event_indices)} event dates matched candle data (need 5+). "
+                        f"Dates found: {[d.strftime('%Y-%m-%d') for d in event_dates[:5]]}. "
                         f"Try EURUSD, GBPUSD, or USDJPY for best coverage."
-                    )
+                    ),
                 }
 
             stats = self.compute_event_stats(candles, event_indices, pip_size)
             if "error" in stats:
-                return stats
+                return {
+                    "pair": pair,
+                    "event": event,
+                    "success": False,
+                    **stats,
+                }
 
             return {
                 "pair": pair,
                 "event": event,
+                "success": True,
                 "session_bias": classify_session(event_dates[0].hour),
+                "data_source": "Finnhub economic calendar + Twelve Data 1H candles",
                 "event_dates_used": matched_dates,
                 **stats,
                 "analysis_timestamp": datetime.utcnow().isoformat() + "Z",
             }
 
         except ValueError as e:
-            return {"error": str(e)}
+            return {
+                "pair": pair,
+                "event": event,
+                "success": False,
+                "error": str(e),
+            }
         except Exception as e:
-            return {"error": f"Unexpected error: {str(e)}"}
+            return {
+                "pair": pair,
+                "event": event,
+                "success": False,
+                "error": f"Unexpected error: {str(e)}",
+            }
 
     async def volatility_regime_scan(self, pairs: List[str], event: str, lookback_events: int = 24) -> List[Dict[str, Any]]:
         event = event.upper()
@@ -553,23 +674,18 @@ async def handle_list_tools() -> list[Tool]:
             },
             outputSchema={
                 "type": "object",
-                "required": [
-                    "pair", "event", "session_bias", "sample_size",
-                    "expected_deviation_pips", "mean_deviation_pips",
-                    "p75_deviation_pips", "h4_range_median_pips",
-                    "breakout_probability", "mean_reversion_probability",
-                    "fakeout_likelihood_score", "volatility_regime",
-                    "confidence_score", "analysis_timestamp"
-                ],
+                "required": ["pair", "event"],
                 "properties": {
                     "pair": {"type": "string"},
                     "event": {"type": "string"},
+                    "success": {"type": "boolean"},
+                    "error": {"type": "string"},
                     "session_bias": {"type": "string"},
+                    "sample_size": {"type": "integer"},
                     "event_dates_used": {
                         "type": "array",
                         "items": {"type": "string"}
                     },
-                    "sample_size": {"type": "integer"},
                     "expected_deviation_pips": {"type": "number"},
                     "mean_deviation_pips": {"type": "number"},
                     "p75_deviation_pips": {"type": "number"},
@@ -580,7 +696,7 @@ async def handle_list_tools() -> list[Tool]:
                     "volatility_regime": {"type": "string"},
                     "confidence_score": {"type": "number"},
                     "analysis_timestamp": {"type": "string"},
-                    "error": {"type": "string"}
+                    "data_source": {"type": "string"}
                 }
             }
         ),
@@ -686,6 +802,15 @@ async def handle_call_tool(name: str, arguments: dict) -> dict:
 
         return {"error": f"Unknown tool: {name}"}
     except Exception as exc:
+        if name == "event_volatility_projection":
+            return {
+                "pair": str(arguments.get("pair", "")).upper().replace("/", ""),
+                "event": str(arguments.get("event", "")).upper(),
+                "success": False,
+                "error": f"Internal server error: {str(exc)}",
+                "analysis_timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+
         return {
             "error": f"Internal server error: {str(exc)}",
             "tool": name,
