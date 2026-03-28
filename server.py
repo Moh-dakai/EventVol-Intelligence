@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import statistics
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
@@ -32,6 +33,11 @@ FINNHUB_EVENT_MAP = {
     "PPI": "Producer Price Index",
     "RETAIL_SALES": "Retail Sales",
 }
+
+_CANDLE_CACHE: dict[tuple[str, str, int], tuple[float, list[dict[str, Any]]]] = {}
+CACHE_TTL_SECONDS = 300
+_EVENT_DATE_CACHE: dict[str, tuple[float, list[datetime]]] = {}
+EVENT_DATE_CACHE_TTL = 3600
 
 # -----------------------------------------------------------------
 # Economic Calendar  — real historical UTC release datetimes
@@ -270,6 +276,13 @@ async def fetch_event_dates_from_finnhub(event: str, lookback_months: int = 24) 
     Fetch real historical event release dates from Finnhub Economic Calendar.
     Returns list of datetimes sorted most-recent-first.
     """
+    cache_key = f"{event.upper()}_{lookback_months}"
+    now = time.time()
+    if cache_key in _EVENT_DATE_CACHE:
+        cached_at, cached_dates = _EVENT_DATE_CACHE[cache_key]
+        if now - cached_at < EVENT_DATE_CACHE_TTL:
+            return cached_dates
+
     keyword = FINNHUB_EVENT_MAP.get(event.upper())
     if not keyword or not FINNHUB_API_KEY:
         return []
@@ -332,6 +345,7 @@ async def fetch_event_dates_from_finnhub(event: str, lookback_months: int = 24) 
         seen_dates.add(date_key)
         unique_dates.append(event_dt)
 
+    _EVENT_DATE_CACHE[cache_key] = (time.time(), unique_dates)
     return unique_dates
 
 class EventVolServer:
@@ -346,6 +360,13 @@ class EventVolServer:
         interval: str = "1day",
         outputsize: int = 500,
     ) -> List[Dict[str, Any]]:
+        cache_key = (pair, interval, outputsize)
+        now = time.time()
+        if cache_key in _CANDLE_CACHE:
+            cached_at, cached_candles = _CANDLE_CACHE[cache_key]
+            if now - cached_at < CACHE_TTL_SECONDS:
+                return cached_candles
+
         # Twelve Data uses different symbol formats for FX
         # EURUSD should be EUR/USD
         symbol = f"{pair[:3]}/{pair[3:]}"
@@ -371,11 +392,12 @@ class EventVolServer:
                 # Ensure candles are oldest -> newest for forward-looking ranges (i+1, i+4).
                 values = data["values"]
                 values.sort(key=lambda candle: parse_candle_datetime(candle["datetime"]))
+                _CANDLE_CACHE[cache_key] = (time.time(), values)
                 return values
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_error = exc
                 if attempt < 2:
-                    await asyncio.sleep(attempt + 1)
+                    await asyncio.sleep(2 * (attempt + 1))
                     continue
                 raise ValueError("API request failed after 3 attempts") from exc
             except httpx.HTTPStatusError as exc:
@@ -386,9 +408,9 @@ class EventVolServer:
         raise ValueError("API request failed after 3 attempts") from last_error
 
     def compute_event_stats(self, candles: List[Dict[str, Any]], event_indices: List[int], pip_size: float, window_h: int = 4) -> Dict[str, Any]:
-        if len(event_indices) < 5:
+        if len(event_indices) < 3:
             return {
-                "error": "Insufficient data: fewer than 5 event instances found",
+                "error": "Insufficient data: fewer than 3 event instances found",
                 "sample_size": len(event_indices)
             }
 
@@ -440,7 +462,10 @@ class EventVolServer:
 
         # Aggregates
         expected_deviation_pips = statistics.median(h1_ranges)
-        p75_deviation_pips = statistics.quantiles(h1_ranges, n=4)[2]  # 75th percentile
+        if len(h1_ranges) >= 4:
+            p75_deviation_pips = statistics.quantiles(h1_ranges, n=4)[2]
+        else:
+            p75_deviation_pips = max(h1_ranges)
         mean_deviation_pips = statistics.mean(h1_ranges)
         h4_range_median_pips = statistics.median(h4_ranges) if h4_ranges else 0
 
@@ -495,21 +520,23 @@ class EventVolServer:
                 "pair": pair,
                 "event": event,
                 "success": False,
+                "dataAvailable": False,
                 "error": f"Event '{event}' not supported. Use: {list(FINNHUB_EVENT_MAP.keys())}",
             }
 
         try:
             event_dates = await fetch_event_dates_from_finnhub(event, lookback_months=24)
-            if len(event_dates) < 5 and event in HARDCODED_EVENT_DATES:
+            if len(event_dates) < 3 and event in HARDCODED_EVENT_DATES:
                 event_dates = sorted(HARDCODED_EVENT_DATES[event], reverse=True)
 
             event_dates = event_dates[:lookback_events]
 
-            if len(event_dates) < 5:
+            if len(event_dates) < 3:
                 return {
                     "pair": pair,
                     "event": event,
                     "success": False,
+                    "dataAvailable": False,
                     "error": (
                         f"Insufficient event dates found ({len(event_dates)}). "
                         "Check FINNHUB_API_KEY is set in Railway environment variables."
@@ -532,24 +559,27 @@ class EventVolServer:
                     event_indices.append(idx)
                     matched_dates.append(event_dt.strftime("%Y-%m-%d"))
 
-            if len(event_indices) < 5:
+            if len(event_indices) < 3:
                 return {
                     "pair": pair,
                     "event": event,
                     "success": False,
+                    "dataAvailable": False,
                     "error": (
-                        f"Only {len(event_indices)} event dates matched candle data (need 5+). "
-                        f"Dates found: {[d.strftime('%Y-%m-%d') for d in event_dates[:5]]}. "
-                        f"Try EURUSD, GBPUSD, or USDJPY for best coverage."
+                        f"Only {len(event_indices)} event dates matched candle data (need 3+). "
+                        f"Dates found from calendar: {[d.strftime('%Y-%m-%d') for d in event_dates[:5]]}. "
+                        "This event may have limited history on the free data tier."
                     ),
                 }
 
+            low_sample_warning = len(event_indices) < 5
             stats = self.compute_event_stats(candles, event_indices, pip_size)
             if "error" in stats:
                 return {
                     "pair": pair,
                     "event": event,
                     "success": False,
+                    "dataAvailable": False,
                     **stats,
                 }
 
@@ -557,6 +587,8 @@ class EventVolServer:
                 "pair": pair,
                 "event": event,
                 "success": True,
+                "dataAvailable": True,
+                "low_sample_warning": low_sample_warning,
                 "session_bias": classify_session(event_dates[0].hour),
                 "data_source": "Finnhub economic calendar + Twelve Data 1H candles",
                 "event_dates_used": matched_dates,
@@ -569,6 +601,7 @@ class EventVolServer:
                 "pair": pair,
                 "event": event,
                 "success": False,
+                "dataAvailable": False,
                 "error": str(e),
             }
         except Exception as e:
@@ -576,6 +609,7 @@ class EventVolServer:
                 "pair": pair,
                 "event": event,
                 "success": False,
+                "dataAvailable": False,
                 "error": f"Unexpected error: {str(e)}",
             }
 
@@ -674,11 +708,13 @@ async def handle_list_tools() -> list[Tool]:
             },
             outputSchema={
                 "type": "object",
-                "required": ["pair", "event"],
+                "required": ["pair", "event", "success"],
                 "properties": {
                     "pair": {"type": "string"},
                     "event": {"type": "string"},
                     "success": {"type": "boolean"},
+                    "dataAvailable": {"type": "boolean"},
+                    "low_sample_warning": {"type": "boolean"},
                     "error": {"type": "string"},
                     "session_bias": {"type": "string"},
                     "sample_size": {"type": "integer"},
@@ -807,6 +843,7 @@ async def handle_call_tool(name: str, arguments: dict) -> dict:
                 "pair": str(arguments.get("pair", "")).upper().replace("/", ""),
                 "event": str(arguments.get("event", "")).upper(),
                 "success": False,
+                "dataAvailable": False,
                 "error": f"Internal server error: {str(exc)}",
                 "analysis_timestamp": datetime.utcnow().isoformat() + "Z",
             }
