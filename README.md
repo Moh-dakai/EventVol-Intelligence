@@ -1,191 +1,608 @@
-# EventVol Intelligence MCP Server
+# EventVol Intelligence {Event-Adjusted FX Volatility Projection Engine}
+_A Model Context Protocol (MCP) server that analyzes FX market volatility around macro-economic events. Provides expected pip deviation, breakout probability, fakeout scores, and volatility regime classification leveraging historical price patterns and economic calendar data._
 
-A Model Context Protocol (MCP) server that provides statistical analysis of FX volatility around macro economic events. This server helps traders and analysts understand expected price movements and volatility patterns during major economic announcements.
+<p align="center">
+  
+[![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-1.0+-orange.svg)](https://modelcontextprotocol.io/)
 
-## Features
+</p>
+<!-- 
+## CRACKED DEVS BEHIND THIS
+<p align="center">
+  <img src="https://img.shields.io/badge/CONTRACTOR-X-blue?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/MOH-DAKAI-green?style=for-the-badge" />
+</p>
+-->
+##  Table of Contents
 
-- **Event Volatility Analysis**: Analyze expected price deviations for FX pairs during macro events (NFP, CPI, FOMC, etc.)
-- **Probability Calculations**: Calculate breakout and fakeout probabilities based on historical data
-- **Volatility Regimes**: Determine current volatility regimes for different currency pairs
-- **Multi-Pair Support**: Support for multiple FX pairs including EURUSD, GBPUSD, USDJPY, USDCAD, and more
-- **Real-time Data**: Uses Twelve Data API for current market data
-- **HTTP/SSE Transport**: FastAPI-based server with Server-Sent Events for real-time communication
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Architecture](#architecture)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [API Reference](#api-reference)
+- [Project Structure](#project-structure)
+- [Data Flow](#data-flow)
+- [Testing](#testing)
+- [Contributing](#contributing)
+- [License](#license)
 
-## Supported Events
+##  Overview
 
-| Event | Description | Typical Time (UTC) | Primary Pairs |
-|-------|-------------|-------------------|---------------|
-| NFP | US Non-Farm Payrolls | 13:30 (1st Friday) | EURUSD, GBPUSD, USDJPY, USDCAD |
-| CPI | US Consumer Price Index | 13:30 | EURUSD, GBPUSD, USDJPY |
-| FOMC | Federal Open Market Committee | 19:00 | EURUSD, GBPUSD, USDJPY, XAUUSD |
-| ECB | European Central Bank | 13:45 | EURUSD, EURGBP, EURJPY |
-| BOE | Bank of England | 12:00 | GBPUSD, EURGBP, GBPJPY |
-| PPI | US Producer Price Index | 13:30 | EURUSD, USDJPY |
-| RETAIL_SALES | US Retail Sales | 13:30 | EURUSD, GBPUSD |
+EventVol Intelligence is an MCP server that analyzes historical forex price behavior during macro-economic events (NFP, CPI, FOMC, ECB, BOE, PPI, Retail Sales) to project expected volatility and trading patterns. It combines:
 
-## HTTP/SSE Transport & Deployment
+- **Economic calendar integration** with precise historical event dates
+- **1-hour candle analysis** covering 200+ days of historical data via Twelve Data API
+- **Statistical pattern matching** to identify similar historical conditions
+- **Volatility metrics** including expected deviation, breakout probability, and fakeout scores
+- **Regime classification** (Compressed/Normal/Expansionary) based on recent market activity
+- **Confidence scoring** weighted by sample size and variance consistency
 
-This server uses a FastAPI + Server-Sent Events transport and can be deployed to Railway, Render, Fly.io, Heroku, or any Python host.
+The server exposes three MCP tools that accept FX pairs and event types, returning comprehensive statistical analysis including pip ranges, probability metrics, and session bias information to inform trading decisions.
 
-### Available Endpoints
+##  Key Features
 
-- `GET /` → Tool metadata JSON (name, tools, pricing)
-- `GET /health` → Health check (`{"status": "ok"}`)
-- `GET /sse` → Opens SSE stream for MCP communication
-- `POST /messages` → Accepts MCP JSON-RPC messages
+###  Event-Driven Analysis
+- **Historical Event Matching**: Links economic events to precise historical release times via Finnhub calendar or hardcoded event dates
+- **Multi-Event Support**: NFP, CPI, FOMC, ECB, BOE, PPI, Retail Sales
+- **Pattern Recognition**: Finds all matching events in historical candle data and analyzes price action around each release
+- **Session Classification**: Identifies which trading session the event occurs in (Asia/London/NY)
 
-### Environment Variables
+###  Volatility Metrics
+- **Expected Deviation**: Median pip range during first 2 hours after event (immediate reaction)
+- **Extended Range**: 4-hour post-event pip movement for full reaction analysis
+- **Breakout Probability**: Percentage of events that resulted in directional continuation
+- **Fakeout Likelihood**: Probability of mean reversion or failed breakouts
+- **Confidence Score**: Statistical confidence based on sample size and variance
 
-```bash
-TWELVE_DATA_API_KEY=your_key_here
-PORT=8000  # Optional, defaults to 8000
+###  Regime Classification
+- **Compressed**: Recent average volatility <75% of historical mean (potential breakout setup)
+- **Normal**: Recent activity within 75-130% of historical mean
+- **Expansionary**: Recent volatility >130% of historical mean
+
+###  Developer-Friendly
+- **MCP Protocol**: Standards-compliant MCP server using SSE transport
+- **HTTP/REST API**: FastAPI-based server with JSON responses
+- **Caching**: Built-in response caching to reduce API calls
+- **Error Handling**: Graceful handling of insufficient data and API errors
+
+##  Architecture
+
+EventVol follows a clean event-to-analysis pipeline:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  External Data Sources                                          │
+│  ├── Finnhub Economic Calendar API (Event dates)                │
+│  ├── Twelve Data API (1H forex candles)                         │
+│  └── Hardcoded Event Dates (Fallback)                           │
+└────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  MCP Server (server.py)                                         │
+│  ├── SSE Transport for MCP Protocol                             │
+│  ├── Tool Definition Layer                                      │
+│  └── FastAPI HTTP Wrapper                                       │
+└────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  EventVolServer Class                                           │
+│  ├── fetch_candles() - Retrieves 1H OHLCV data                  │
+│  ├── event_volatility_projection() - Main analysis              │
+│  ├── volatility_regime_scan() - Multi-pair scan                 │
+│  └── list_supported_events() - Event metadata                   │
+└────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Analysis Layer                                                 │
+│  ├── compute_event_stats() - Range calculations                 │
+│  ├── Pattern Matching - Event date alignment to candles         │
+│  ├── Probability Calculation - Breakout/fakeout stats           │
+│  └── Regime Classification - Volatility regime detection        │
+└────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Response Layer                                                 │
+│  ├── Statistical metrics (deviation, probability, confidence)   │
+│  ├── Regime classification and sample data                      │
+│  └── Event dates used and data source attribution               │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-### Deployment Files
+### Core Components
 
-- `Procfile`: `web: python server.py`
-- `runtime.txt`: `python-3.11.9` (for Heroku deployment)
+- **MCP Server**: Handles MCP protocol communication and tool exposure
+- **Twelve Data Client**: Fetches historical 1-hour candles for analysis
+- **Finnhub Calendar Client**: Retrieves real historical event release dates
+- **Event Analyzer**: Matches events to candles and computes statistics
+- **Regime Classifier**: Categorizes current volatility environment
 
-## Installation & Setup
+##  Installation
 
 ### Prerequisites
 
-- Python 3.11.9 or later
-- Twelve Data API key ([Get one here](https://twelvedata.com/))
+- Python 3.11.9 or higher
+- Twelve Data API key ([Get one here](https://twelvedata.com/) - free tier available)
+- Finnhub API key (optional, for live event calendar) ([Get one here](https://finnhub.io/))
 
-### Local Development
+### Step 1: Clone the Repository
 
-1. **Clone the repository** (if applicable) and navigate to the project directory
+```bash
+git clone https://github.com/your-org/EventVol-Intelligence.git
+cd EventVol-Intelligence
+```
 
-2. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Step 2: Create Virtual Environment
 
-3. **Set up environment variables**:
-   Create a `.env` file in the root directory:
-   ```
-   TWELVE_DATA_API_KEY=your_actual_api_key_here
-   ```
+```bash
+# Create virtual environment
+python -m venv .venv
 
-4. **Run the server locally**:
-   ```bash
-   python server.py
-   ```
+# Activate it
+source .venv/bin/activate  # Linux/Mac
+# OR
+.venv\Scripts\activate     # Windows
+```
 
-5. **Verify the server is running**:
-   - Health check: `http://localhost:8000/health`
-   - Tool metadata: `http://localhost:8000/`
+### Step 3: Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### Step 4: Set Environment Variables
+
+Create a `.env` file in the project root:
+
+```bash
+TWELVE_DATA_API_KEY=your_api_key_here
+FINNHUB_API_KEY=your_finnhub_key_here  # Optional
+PORT=8000
+```
+
+### Step 5: Verify Installation
+
+```bash
+# Test import
+python -c "from server import EventVolServer; print('Installation successful')"
+```
+
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the project root:
+
+```bash
+# Required
+TWELVE_DATA_API_KEY=your_api_key_here
+
+# Optional: For live economic calendar integration
+FINNHUB_API_KEY=your_finnhub_key_here
+
+# Optional: Server configuration
+PORT=8000
+LOG_LEVEL=INFO
+```
+
+### API Keys
+
+**Twelve Data:**
+- Free tier: 800 requests/day
+- Used for fetching 1-hour OHLCV candle data
+- Sign up at https://twelvedata.com/
+
+**Finnhub (Optional):**
+- Free tier available
+- Used to fetch real historical event release dates
+- Falls back to hardcoded event dates if unavailable
+- Sign up at https://finnhub.io/
+
+### Data Caching
+
+The server includes response caching to reduce API calls:
+- **Candle Cache TTL**: 300 seconds
+- **Event Date Cache TTL**: 3600 seconds
+- Automatic cache invalidation based on time-to-live
 
 ## Usage
 
-### MCP Client Integration
+### MCP Server (Production)
 
-Once integrated with an MCP client (like Claude Desktop), you can ask questions such as:
+Run the MCP server with SSE transport:
 
-- "What is the expected volatility for GBPUSD during NFP?"
-- "Scan volatility regimes for EURUSD, GBPUSD, USDJPY on CPI"
-- "What events are supported and their timings?"
-- "Analyze breakout probability for USDJPY during FOMC"
+```bash
+python server.py
+```
 
-### API Usage Examples
+The server runs on `http://localhost:8000` by default.
 
-#### Get Event Volatility Projection
+### Integration with Claude Desktop
+
+Add to your `claude_desktop_config.json`:
+
 ```json
 {
-  "method": "tools/call",
-  "params": {
-    "name": "event_volatility_projection",
-    "arguments": {
+  "mcpServers": {
+    "eventvol": {
+      "command": "python",
+      "args": ["server.py"],
+      "env": {
+        "TWELVE_DATA_API_KEY": "your_api_key_here",
+        "FINNHUB_API_KEY": "your_finnhub_key_here"
+      }
+    }
+  }
+}
+```
+
+### Endpoints
+
+When server is running:
+
+- `GET /` - Server info and available tools
+- `GET /health` - Health check
+- `GET /sse` - SSE stream for MCP protocol
+- `POST /messages` - Accept MCP messages
+
+### Example Usage
+
+Once integrated with an MCP client, you can ask:
+
+```
+"What is the expected volatility for EURUSD during NFP?"
+"Scan volatility regimes for EURUSD, GBPUSD, USDJPY on CPI"
+"What macro events are supported?"
+"Analyze breakout probability for USDJPY during FOMC"
+```
+
+## API Reference
+
+### Tool 1: `event_volatility_projection`
+
+Analyzes historical volatility pattern for a specific FX pair during a macro event.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pair` | string | Yes | FX pair (e.g., "EURUSD", "GBPUSD", "USDJPY") |
+| `event` | string | Yes | Event: NFP, CPI, FOMC, ECB, BOE, PPI, RETAIL_SALES |
+| `lookback_events` | integer | No | Number of past events to analyze (default: 24, max: 48) |
+
+#### Response
+
+```json
+{
+  "pair": "EURUSD",
+  "event": "NFP",
+  "success": true,
+  "dataAvailable": true,
+  "sample_size": 24,
+  "expected_deviation_pips": 67.3,
+  "mean_deviation_pips": 71.2,
+  "p75_deviation_pips": 95.4,
+  "h4_range_median_pips": 103.5,
+  "breakout_probability": 0.58,
+  "mean_reversion_probability": 0.42,
+  "fakeout_likelihood_score": 0.42,
+  "volatility_regime": "Normal",
+  "confidence_score": 0.87,
+  "session_bias": "NY",
+  "event_dates_used": ["2025-05-02", "2025-04-04", "2025-03-07"],
+  "low_sample_warning": false,
+  "data_source": "Finnhub economic calendar + Twelve Data 1H candles",
+  "analysis_timestamp": "2026-05-17T10:30:00Z"
+}
+```
+
+### Tool 2: `volatility_regime_scan`
+
+Scans multiple FX pairs and returns their volatility regime classification for a given event.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pairs` | array | Yes | List of FX pairs (e.g., ["EURUSD", "GBPUSD", "USDJPY"]) |
+| `event` | string | No | Event type (default: "NFP") |
+| `lookback_events` | integer | No | Number of past events (default: 24) |
+
+#### Response
+
+```json
+{
+  "event_context": "NFP",
+  "results": [
+    {
       "pair": "EURUSD",
-      "event": "NFP",
-      "lookback_events": 24
+      "regime": "Normal",
+      "median_dev_pips": 67.3,
+      "confidence": 0.87
+    },
+    {
+      "pair": "GBPUSD",
+      "regime": "Compressed",
+      "median_dev_pips": 52.1,
+      "confidence": 0.81
+    },
+    {
+      "pair": "USDJPY",
+      "regime": "Expansionary",
+      "median_dev_pips": 89.7,
+      "confidence": 0.79
+    }
+  ],
+  "timestamp": "2026-05-17T10:30:00Z"
+}
+```
+
+### Tool 3: `list_supported_events`
+
+Lists all supported macro events and their availability.
+
+#### Parameters
+
+None
+
+#### Response
+
+```json
+{
+  "supported_events": {
+    "NFP": {
+      "total_dates_available": 48,
+      "earliest": "2022-01-07",
+      "latest": "2025-12-05",
+      "utc_hour": 13
+    },
+    "CPI": {
+      "total_dates_available": 47,
+      "earliest": "2022-01-12",
+      "latest": "2025-12-10",
+      "utc_hour": 13
+    },
+    "FOMC": {
+      "total_dates_available": 32,
+      "earliest": "2022-03-16",
+      "latest": "2026-03-18",
+      "utc_hour": 19
+    },
+    "ECB": {
+      "total_dates_available": 32,
+      "earliest": "2022-02-03",
+      "latest": "2025-12-18",
+      "utc_hour": 13
+    },
+    "BOE": {
+      "total_dates_available": 32,
+      "earliest": "2022-02-03",
+      "latest": "2025-12-18",
+      "utc_hour": 12
+    },
+    "PPI": {
+      "total_dates_available": 44,
+      "earliest": "2022-01-13",
+      "latest": "2025-12-11",
+      "utc_hour": 13
+    },
+    "RETAIL_SALES": {
+      "total_dates_available": 44,
+      "earliest": "2022-01-14",
+      "latest": "2025-12-16",
+      "utc_hour": 13
     }
   }
 }
 ```
 
-#### Scan Multiple Pairs for Volatility Regimes
-```json
-{
-  "method": "tools/call",
-  "params": {
-    "name": "volatility_regime_scan",
-    "arguments": {
-      "pairs": ["EURUSD", "GBPUSD", "USDJPY"],
-      "event": "CPI"
-    }
-  }
-}
+### Response Metrics Explained
+
+| Metric | Description |
+|--------|-------------|
+| `expected_deviation_pips` | Median pip range in first 2 hours after event |
+| `p75_deviation_pips` | 75th percentile pip range (worst case typical) |
+| `h4_range_median_pips` | Median pip range over 4 hours post-event |
+| `breakout_probability` | % of events resulting in directional continuation |
+| `mean_reversion_probability` | % of events resulting in pullback/fakeout |
+| `fakeout_likelihood_score` | Probability of trend reversal |
+| `volatility_regime` | Compressed/Normal/Expansionary classification |
+| `confidence_score` | 0-1 reliability score based on sample size and variance |
+
+##  Project Structure
+
+```
+EventVol-Intelligence/
+├── .env                      # Environment variables (API keys)
+├── .gitignore               # Git ignore rules
+├── .git/                    # Git repository
+├── README.md                # This file
+├── requirements.txt         # Python dependencies
+├── runtime.txt              # Python version (3.11.9)
+├── Procfile                 # Deployment config (web: python server.py)
+├── claude_desktop_config.json  # MCP Claude Desktop config
+├── server.py                # Main MCP server (EventVolServer class)
+├── server_output.log        # Server logs
+├── test_local.py            # Local testing utilities
+└── tests/                   # Test suite
+    ├── test_event_projection_errors.py
+    └── test_event_specificity.py
 ```
 
-#### List Supported Events
-```json
-{
-  "method": "tools/call",
-  "params": {
-    "name": "list_supported_events",
-    "arguments": {}
-  }
-}
+### Key Files
+
+- **server.py**: Main MCP server implementation with EventVolServer class and MCP tools
+- **requirements.txt**: Dependencies (mcp, httpx, starlette, uvicorn, etc.)
+- **test_local.py**: Local testing utilities and mock data
+- **tests/**: Comprehensive test suite for analysis and projections
+
+##  Data Flow
+
+```
+┌─────────────────┐
+│  MCP Client     │
+│ (Claude, etc)   │
+└────────┬────────┘
+         │
+    Call Tool
+         │
+         ▼
+┌─────────────────────────────┐
+│  SSE Transport Handler      │
+│  /sse → MCP messages        │
+└────────┬────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  Tool Handler               │
+│  event_volatility_projection│
+│  volatility_regime_scan     │
+│  list_supported_events      │
+└────────┬────────────────────┘
+         │
+    ┌────┴──────┐
+    │            │
+    ▼            ▼
+┌──────────┐  ┌──────────────────┐
+│ Fetch    │  │ Get Event Dates  │
+│ Candles  │  │ (Finnhub/Cache)  │
+└────┬─────┘  └────────┬─────────┘
+     │                 │
+     ▼                 ▼
+┌──────────────────────────────┐
+│ Twelve Data API              │
+│ (1H OHLCV candles)           │
+└──────┬───────────────────────┘
+       │
+       ▼
+┌──────────────────────────────┐
+│ Event Date Matching          │
+│ Find candle index per event  │
+└──────┬───────────────────────┘
+       │
+       ▼
+┌──────────────────────────────┐
+│ Compute Event Statistics     │
+│ • Range calculations         │
+│ • Breakout/fakeout analysis  │
+│ • Volatility regime class    │
+│ • Confidence scoring         │
+└──────┬───────────────────────┘
+       │
+       ▼
+┌──────────────────────────────┐
+│ Format Response              │
+│ • Metrics and confidence     │
+│ • Event dates used           │
+│ • Data source attribution    │
+└──────┬───────────────────────┘
+       │
+       ▼
+┌──────────────────────────────┐
+│ Return to MCP Client         │
+│ JSON Response                │
+└──────────────────────────────┘
 ```
 
-## Tools
+### Analysis Pipeline
 
-### `event_volatility_projection`
-**Purpose**: Get detailed volatility projection for a specific FX pair and macro event.
+1. **Receive Request**: User specifies pair, event, lookback period
+2. **Fetch Event Dates**: Query Finnhub calendar or use hardcoded dates
+3. **Fetch Candles**: Retrieve 1-hour OHLCV data for ~200 days
+4. **Match Events to Candles**: Find candle index for each event date
+5. **Calculate Ranges**: High/low over 2H and 4H windows
+6. **Compute Probabilities**: Breakout vs mean reversion frequency
+7. **Classify Regime**: Compare recent volatility to historical mean
+8. **Score Confidence**: Weight by sample size and variance consistency
+9. **Return Metrics**: All statistics aggregated and formatted
 
-**Parameters**:
-- `pair` (string): FX pair (e.g., EURUSD, USDJPY, GBPUSD)
-- `event` (string): Macro event (NFP, CPI, FOMC, ECB, BOE, PPI, RETAIL_SALES)
-- `lookback_events` (integer, optional): Number of past events to analyze (default: 24, max: 48)
+##  Testing
 
-**Returns**: Expected deviation, breakout probability, volatility regime, and confidence metrics.
-
-### `volatility_regime_scan`
-**Purpose**: Scan volatility regimes for multiple FX pairs for a given event.
-
-**Parameters**:
-- `pairs` (array): List of FX pairs to scan
-- `event` (string): Macro event to analyze
-
-**Returns**: Volatility regime analysis for each pair including median deviation and confidence scores.
-
-### `list_supported_events`
-**Purpose**: List all supported macro events and their primary FX pairs.
-
-**Parameters**: None
-
-**Returns**: Array of events with UTC timing and associated currency pairs.
-
-## Development
+EventVol includes a test suite for validation and development:
 
 ### Running Tests
 
 ```bash
+# Run all tests
+python -m pytest tests/
+
+# Run specific test file
+python -m pytest tests/test_event_projection_errors.py
+python -m pytest tests/test_event_specificity.py
+
+# Run with verbose output
+python -m pytest tests/ -v
+
+# Run local test script
 python test_local.py
 ```
 
-### Code Structure
+### Test Files
 
-- `server.py`: Main FastAPI server with MCP integration
-- `test_local.py`: Local testing utilities
-- `requirements.txt`: Python dependencies
-- `runtime.txt`: Python version specification
-- `Procfile`: Deployment configuration
+- **test_event_projection_errors.py**: Tests error handling and edge cases
+- **test_event_specificity.py**: Tests accuracy of event date matching and volatility calculations
 
-## Contributing
+### Test Coverage
+
+Tests validate:
+- Event date matching accuracy
+- Volatility projection calculations
+- Probability metrics computation
+- Regime classification logic
+- Error handling for API failures
+- Insufficient data scenarios
+
+### Running the Server Locally
+
+```bash
+# Start development server
+python server.py
+
+# Check health
+curl http://localhost:8000/health
+
+# View server info
+curl http://localhost:8000/
+
+# Send test MCP message (via SSE stream)
+# Use MCP-compatible client like Claude Desktop
+```
+
+### Development Workflow
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+2. Create a feature branch: `git checkout -b feature/your-feature`
+3. Set up development environment (see Installation)
+4. Make your changes to server.py or tests
+5. Run tests: `python -m pytest tests/`
+6. Commit changes: `git commit -am 'Add your feature'`
+7. Push to branch: `git push origin feature/your-feature`
+8. Create Pull Request
 
-## License
+### Code Standards
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+- Follow PEP 8 style guidelines
+- Add type hints for function parameters and return values
+- Write comprehensive docstrings
+- Add unit tests for new functionality
+- Update README.md if adding new features
+##  License
 
-## Disclaimer
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-This tool provides statistical analysis based on historical data and should not be considered as financial advice. Always perform your own due diligence and risk assessment before making trading decisions.
+##  Disclaimer
+
+This tool provides statistical analysis based on historical price patterns during economic events and should not be considered as financial advice. Always perform your own due diligence and risk assessment before making trading decisions. Past event volatility is not indicative of future results.
+
+##  Support
+
+- **Issues**: [GitHub Issues](https://github.com/your-username/EventVol-Intelligence/issues)
+- **Documentation**: Review this README and test files for examples
+- **Contributing**: See Development section above for contribution guidelines
