@@ -6,15 +6,10 @@ _A Model Context Protocol (MCP) server that analyzes FX market volatility around
 [![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-1.0+-orange.svg)](https://modelcontextprotocol.io/)
+[![Marketplace](https://img.shields.io/badge/Marketplace-CTX%20Protocol-blue.svg)](https://www.ctxprotocol.com/)
 
 </p>
-<!-- 
-## CRACKED DEVS BEHIND THIS
-<p align="center">
-  <img src="https://img.shields.io/badge/CONTRACTOR-X-blue?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/MOH-DAKAI-green?style=for-the-badge" />
-</p>
--->
+<
 ##  Table of Contents
 
 - [Overview](#overview)
